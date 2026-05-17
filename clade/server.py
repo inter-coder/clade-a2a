@@ -34,6 +34,7 @@ from typing import Any
 import uvicorn
 
 from clade import __version__
+from clade.ask_handler import extract_question, handle_ask
 from clade.audit import Audit
 from clade.envelope import (
     Envelope, PROTOCOL_MAJOR, PROTOCOL_VERSION, check_protocol_compat,
@@ -212,19 +213,60 @@ class Server:
         LOG.info("← %s [%s] from %s (%s)",
                  env.msg_id[:8], env.kind, env.from_agent, env.thread_id or "no-thread")
 
-        # PR#2 placeholder za 'ask': vrati ack reply.
-        # PR#4/5 ce ovo zameniti pravom claude --print spawn integracijom.
+        # v2.1.0: real ask handler — spawn claude --print sa thread context-om
         if env.kind == "ask":
-            ack = Envelope.new(
-                from_agent=self.me_id, to_agent=env.from_agent, kind="reply",
-                payload={"_ack": "received, claude integration coming in PR#4"},
-                correlation_id=env.correlation_id,
-                thread_id=env.thread_id,
-            )
-            self.audit.record(ack, direction="out", status="delivered")
-            return Response(envelope=ack)
+            return await self._handle_ask(env)
 
         return Response(envelope=None)
+
+    async def _handle_ask(self, env: Envelope) -> Response:
+        """Async helper za 'ask' kind. Spawn-uje claude --print kroz
+        clade.ask_handler i salje reply. Ako workdir nije konfigurisan,
+        vraca error reply umesto crash-a."""
+        if not self.me.workdir:
+            err_msg = f"peer '{self.me_id}' nema 'workdir' u peers.yaml — ask handler ne moze da spawn-uje claude"
+            LOG.warning(err_msg)
+            err_env = Envelope.new(
+                from_agent=self.me_id, to_agent=env.from_agent, kind="reply",
+                payload={"_error": err_msg},
+                correlation_id=env.correlation_id, thread_id=env.thread_id,
+            )
+            assert self.audit is not None
+            self.audit.record(err_env, direction="out", status="delivered")
+            return Response(envelope=err_env)
+
+        question = extract_question(env.payload)
+        thread_history = (
+            self.thread_cache.get_context(env.thread_id) if env.thread_id else []
+        )
+        # Iskljuci trenutnu ask poruku iz history-ja (vec smo je append-ovali iznad)
+        thread_history = [m for m in thread_history if m.msg_id != env.msg_id]
+
+        from pathlib import Path  # noqa: PLC0415
+        answer = await handle_ask(
+            question=question,
+            from_peer=env.from_agent,
+            my_id=self.me_id,
+            workdir=Path(self.me.workdir),
+            thread_history=thread_history,
+        )
+
+        reply = Envelope.new(
+            from_agent=self.me_id, to_agent=env.from_agent, kind="reply",
+            payload={"answer": answer},
+            correlation_id=env.correlation_id,
+            thread_id=env.thread_id,
+        )
+        assert self.audit is not None
+        self.audit.record(reply, direction="out", status="delivered")
+        # Record reply u thread cache (outgoing)
+        if env.thread_id:
+            from clade.thread_cache import ThreadMsg  # noqa: PLC0415
+            self.thread_cache.append(env.thread_id, ThreadMsg(
+                msg_id=reply.msg_id, ts_ms=reply.timestamp_ms, direction="out",
+                peer=env.from_agent, kind="reply", payload=reply.payload,
+            ))
+        return Response(envelope=reply)
 
     # ---- HTTP server: MCP + /health (uvicorn + fastmcp Starlette) ----
 

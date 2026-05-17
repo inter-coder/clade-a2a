@@ -1,4 +1,4 @@
-# Clade A2A Protocol — v2.0.1
+# Clade A2A Protocol — v2.1.0
 
 Single source of truth za A2A komunikacioni protokol izmedju Claude Code peer-ova.
 
@@ -188,28 +188,37 @@ clade-<peer> proces (asyncio event loop, single-threaded)
 
 **KRITICNO** (v2.0.1 fix u d8e2d6a): pre `uvicorn.Server.serve()`, mora se postaviti `uvicorn_server.install_signal_handlers = lambda: None`. Bez toga uvicorn presreta SIGTERM/SIGINT i Server.stop() nikad ne radi — orphan socket fajlovi posle restart-a.
 
-### 7.1 Ask handler (TODO — gap u v2.0.x)
+### 7.1 Ask handler (v2.1.0)
 
-Trenutno (v2.0.x): `Server._on_peer_envelope` za `kind="ask"` vraca **placeholder** reply:
+`Server._on_peer_envelope` za `kind="ask"` poziva `clade/ask_handler.py:handle_ask()`:
 
 ```python
-ack = Envelope.new(
-    ..., kind="reply",
-    payload={"_ack": "received, claude integration coming in PR#4"},
-)
+async def _handle_ask(self, env: Envelope) -> Response:
+    question = extract_question(env.payload)
+    thread_history = self.thread_cache.get_context(env.thread_id) if env.thread_id else []
+    answer = await handle_ask(
+        question=question, from_peer=env.from_agent, my_id=self.me_id,
+        workdir=Path(self.me.workdir), thread_history=thread_history,
+    )
+    reply = Envelope.new(..., payload={"answer": answer})
+    return Response(envelope=reply)
 ```
 
-To znaci `clade_message(..., expect_reply=True)` ka peer-u koji vrti samo `clade serve` (bez custom handler-a) ce dobiti placeholder, ne pravi odgovor.
+`handle_ask` internals:
+1. **extract_question** — fallback chain `payload.question → payload.text → ceo payload bez _meta polja`. Podrzava i v1 konvenciju (`{"question": ...}`) i v2 string content u `clade_message` (`{"text": ...}`).
+2. **format_thread_for_prompt** — prepend chronological thread history u system prompt ako thread_id ima context u `ThreadCache`. Iskljucuje `_meta` polja.
+3. **spawn_claude_print** — `asyncio.create_subprocess_exec` sa:
+   - `claude --print --append-system-prompt <built_prompt>`
+   - `--mcp-config <workdir>/.mcp.json` ako postoji (omoguci clarify/recursive ask)
+   - `cwd=peer.workdir` iz peers.yaml
+   - `env` sa `CLAUDE_CODE_DISABLE_POLICY_SKILLS=1` + `DISABLE_NONESSENTIAL_TRAFFIC=1` + `DISABLE_FEEDBACK_SURVEY=1` (suppress skills/feedback noise)
+   - 90s timeout → SIGTERM (+ 5s SIGKILL fallback) i specijalan `[ask-handler: timeout]` error string
 
-**v1.x je imao**: `agent/daemon.py` spawn-ovao `claude --print --mcp-config ... --append-system-prompt <thread context>` u privremenom workdir-u, output → reply.payload.answer. To je obrisano u PR#5 cleanup-u.
+**Workdir je obavezan** (`peer.workdir` u peers.yaml). Ako nije konfigurisan, `_handle_ask` vraca reply sa `payload={"_error": "peer X nema workdir u peers.yaml..."}`. `clade init` po default-u kreira `~/.local/state/clade/workdirs/<peer>/` sa `.mcp.json` — to je pravi setup.
 
-**v2.x roadmap (sledeci PR-ovi):**
-- Implementiraj ekvivalentan `claude --print` spawn u `Server._on_peer_envelope` za `kind="ask"`
-- Inject `format_thread_for_prompt(thread_cache.get_context(thread_id))` u system prompt (thread continuity)
-- Postavi `CLAUDE_CODE_DISABLE_POLICY_SKILLS=1` + ostale minimal headless env vars (vidi v1.2.0 §7 minimal headless profile koji je obrisan ali idiom ostaje validan)
-- Re-enable cwd configurabilan po peer (peer.workdir u peers.yaml)
+**Error semantika:** `spawn_claude_print` vraca string. Ako pocinje sa `[ask-handler:` to je signal greske (timeout / non-zero exit / empty output) — pozivac ga forward-uje senderu kao `payload.answer`, sender vidi sta je krenulo po zlu.
 
-Dotle: produkcijski use case zahteva ili (a) lokalni script koji handle-uje ask-ove i salje reply preko `clade_reply` ekvivalenta, ili (b) drugi peer koji je interactive Claude sesija.
+**Rekurzija risk:** spawnovan `claude --print` ima clade tools dostupne preko `.mcp.json`. Ako spontano pozove `clade_message(expect_reply=True)` ka peer-u, mogla bi se desiti petlja. Mitigacija: system prompt eksplicitno trazi "preferiraj direktan odgovor, izbegavaj clade_*". Hard cap nije implementiran — eskaliraj ako problem u praksi.
 
 ---
 
@@ -299,7 +308,8 @@ Konvencije:
 
 | Verzija | Datum | Sta |
 |---|---|---|
-| **v2.0.1** | 2026-05-17 | Hot fix: uvicorn install_signal_handlers override (sprecava clade serve "orphan socket" na SIGTERM). Plus dokumentacijski rewrite §2-§10 za v2 arhitekturu (ovaj fajl). Verzije pyproject + clade.\_\_version\_\_ sinhronizovane na 2.0.1. |
+| **v2.1.0** | 2026-05-17 | Ask handler popunjava §7.1 gap iz v2.0. `clade/ask_handler.py` portuje v1 `agent/daemon.py:call_claude` logiku u `clade serve` proces: `extract_question` fallback chain, `format_thread_for_prompt` za thread continuity, `spawn_claude_print` sa minimal headless env. `Server._on_peer_envelope` za `kind="ask"` sad spawn-uje pravi `claude --print` umesto placeholder `_ack` reply-a. **Workdir je sada obavezan** za peer-ove sa `role: interactive/both` — `clade init` ga vec generise; eksplicitan error reply ako fali. Posle ovog PR-a, end-to-end interactive Claude ↔ Claude komunikacija stvarno radi. |
+| v2.0.1 | 2026-05-17 | Hot fix: uvicorn install_signal_handlers override (sprecava clade serve "orphan socket" na SIGTERM). Plus dokumentacijski rewrite §2-§10 za v2 arhitekturu (ovaj fajl). Verzije pyproject + clade.\_\_version\_\_ sinhronizovane na 2.0.1. |
 | v2.0.0 | 2026-05-17 | **Breaking — arhitekturni reset.** Samozapazanja runda 2 (PR#1-#6 na v2-arch). Jedan proces po peer-u (`clade serve`) umesto v1 daemon + agent + relay tri-process modela. Transport: unix socket peer-to-peer + HTTP 127.0.0.1 za MCP klijent. `Envelope.thread_id` i `Envelope.reply_to` su TOP-LEVEL polja (ne `payload._meta`). `Envelope.protocol_version` polje sa strict major handshake (§2.10). Single `clade` CLI binary sa subkomandama (`serve`, `init`, `status`, `logs`, `send`). systemd `Type=notify` + `WatchdogSec=60s` replace 5 startup skripti. Audit DB write-through (WAL + NORMAL) je single source of truth; ThreadCache in-memory + TTL umesto v1 thread_history tabele. Outbox: sender-driven retry `[0.1, 0.5, 2.0]s` × 3 → background retry svakih 30s, max 20 attempts (~10 min) → dead-letter. **Uklonjeno:** `clade_send`/`clade_ask` wrapperi, file lock, `[CLARIFY]` marker / `_clarify` flag, push notification, v1 daemon poll loop. Relay za on-host vise nije nuzan — opcioni za `--remote` cross-host scenarije. **Otvoreno**: `clade serve` ask handler trenutno vraca placeholder `_ack` reply (vidi §7.1) — `claude --print` spawn integracija je TODO za naredne PR-ove. |
 | v1.2.0 | 2026-05-17 | P2 iz samozapazanja runda 1. Clarify-back konvencija (`_clarify` flag) — daemon-spawn Claude moze da vrati clarify pitanje kroz `[CLARIFY]` marker. Outbox monitor loop u daemon-u. Minimalan headless profil za daemon-spawn Claude. **Pinned tag**: poslednji v1 stable. |
 | v1.1.0 | 2026-05-17 | P1 iz samozapazanja runda 1. Thread persistence semantika za `_thread_id` — `thread_history` SQLite tabela + daemon ucitava history u system prompt. Default `timeout_s` 120 → 90 svuda. |
