@@ -52,13 +52,21 @@ def test_unsupported_version_rejected(tmp_path: Path):
 
 
 def test_transport_relay_requires_relay_url():
+    """v2.2.0: schema validacija samo zahteva relay_url. secret_hex i
+    bearer_token su asimetricni (self vs other), check ide na use-site."""
     with pytest.raises(ValidationError, match="relay_url"):
         PeerEntry(transport="relay", role="headless")
 
 
-def test_transport_relay_requires_secret_hex():
-    with pytest.raises(ValidationError, match="secret_hex"):
-        PeerEntry(transport="relay", relay_url="https://r", bearer_token="tk")
+def test_transport_relay_no_secret_hex_is_valid():
+    """v2.2.0: secret_hex nije obavezan na schema nivou — runtime check
+    proverava asimetricno (self ne treba; other peer treba)."""
+    # Self-style entry (sa bearer_token) — validan
+    entry = PeerEntry(transport="relay", relay_url="https://r", bearer_token="tk")
+    assert entry.relay_url == "https://r"
+    # Other-peer-style entry (sa secret_hex) — validan
+    entry = PeerEntry(transport="relay", relay_url="https://r", secret_hex="deadbeef" * 8)
+    assert entry.secret_hex == "deadbeef" * 8
 
 
 def test_secret_hex_env_substitution(monkeypatch):

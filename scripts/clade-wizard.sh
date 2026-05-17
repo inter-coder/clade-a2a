@@ -110,15 +110,57 @@ if [[ $SELF_FOUND -eq 0 ]]; then
   exit 1
 fi
 
-# ---- 4. HTTP port range ----
+# ---- 4. HTTP port range — proveri SVE N portova slobodne (fix v2.2.0) ----
 echo ""
 info "HTTP portovi za MCP klijent endpoint (po jedan po agent-u)."
 DEFAULT_PORT_START=9100
-while ss -tln 2>/dev/null | grep -q ":${DEFAULT_PORT_START} " && [[ $DEFAULT_PORT_START -lt 9200 ]]; do
+# Trazi prvi start gde su SVI N portova slobodni (ranije bagovan: proveravao samo prvi)
+while [[ $DEFAULT_PORT_START -lt 9500 ]]; do
+  ALL_FREE=1
+  for ((j=0; j<N_PEERS; j++)); do
+    P=$((DEFAULT_PORT_START + j))
+    if ss -tln 2>/dev/null | grep -q ":${P} "; then ALL_FREE=0; break; fi
+  done
+  [[ $ALL_FREE -eq 1 ]] && break
   DEFAULT_PORT_START=$((DEFAULT_PORT_START + 1))
 done
 ask "  Start port [${DEFAULT_PORT_START}]:" PORT_START
 PORT_START=${PORT_START:-$DEFAULT_PORT_START}
+
+# Validate izabrani port range
+PORT_CONFLICTS=()
+for ((j=0; j<N_PEERS; j++)); do
+  P=$((PORT_START + j))
+  if ss -tln 2>/dev/null | grep -q ":${P} "; then PORT_CONFLICTS+=($P); fi
+done
+if [[ ${#PORT_CONFLICTS[@]} -gt 0 ]]; then
+  err "Portovi vec zauzeti: ${PORT_CONFLICTS[*]}"
+  err "Biraj drugi start port (npr. $((DEFAULT_PORT_START + 100)))."
+  exit 1
+fi
+
+# ---- 4.5 Mode izbor: on-host vs multi-machine ----
+echo ""
+info "Deploy mode:"
+echo "  on-host:  svi agenti na ovoj masini (unix socket transport, najbrze)"
+echo "  multi:    generise scp-eable per-peer bundle za cross-host (transport=relay)"
+echo ""
+ask "  Mode [on-host/multi] [on-host]:" MODE
+MODE=${MODE:-on-host}
+if [[ "$MODE" != "on-host" ]] && [[ "$MODE" != "multi" ]]; then
+  err "Mode mora biti 'on-host' ili 'multi'."
+  exit 1
+fi
+
+RELAY_URL=""
+if [[ "$MODE" == "multi" ]]; then
+  echo ""
+  info "Multi-machine zahteva shared relay (clade-relay) dostupan svim peer-ovima."
+  echo "Default ide lokalno na 127.0.0.1:7777 (za smoke test, peer-ovi na istoj masini)."
+  echo "Za pravi multi-machine: stavi javni URL (npr. https://clade.tvojadomen.com)."
+  ask "  Relay URL [http://127.0.0.1:7777]:" RELAY_URL
+  RELAY_URL=${RELAY_URL:-http://127.0.0.1:7777}
+fi
 
 # ---- 5. Confirm ----
 echo ""
@@ -129,10 +171,24 @@ echo "  Lokacija:    $OUT"
 echo "  Agenti:      ${PEERS[*]}"
 echo "  Self:        $SELF  (ti pricas u njegovom workdir-u)"
 echo "  Portovi:     $PORT_START–$((PORT_START + N_PEERS - 1))"
+echo "  Mode:        $MODE"
+[[ "$MODE" == "multi" ]] && echo "  Relay URL:   $RELAY_URL"
 echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════${RESET}"
 echo ""
 ask "Krećemo? [Y/n]:" C
 [[ "${C,,}" == "n" ]] && { echo "Prekidam."; exit 0; }
+
+# ---- MULTI-MACHINE GRANANJE ----
+# Ako je multi, prekida ovde i ide na poseban generator (per-peer bundle).
+# On-host nastavlja ispod (postojeci flow).
+if [[ "$MODE" == "multi" ]]; then
+  bash_source="${BASH_SOURCE[0]}"
+  WIZARD_DIR="$(cd "$(dirname "$bash_source")" && pwd)"
+  exec "$WIZARD_DIR/clade-wizard-multi.sh" \
+    "$PROJECT" "$OUT" "$SELF" "$PORT_START" "$RELAY_URL" \
+    "${PEERS[@]}"
+fi
+# ---- DALJE: on-host single-dir flow ----
 
 # ---- 6. Generate peers.yaml ----
 {
