@@ -349,6 +349,34 @@ async def test_relay_ask_default_timeout_is_90(relay_process, relay_url):
     assert timeout_default == 90, f"Expected timeout_s default 90, got {timeout_default}"
 
 
+# ---- v1.2.0 P2 tests ----
+
+
+def test_daemon_minimal_settings_written():
+    """write_minimal_settings kreira workdir/.claude/settings.json sa skill overrides."""
+    import json as _json  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from agent.daemon import write_minimal_settings  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as d:
+        wd = Path(d)
+        path = write_minimal_settings(wd)
+        assert path.exists()
+        assert path == wd / ".claude" / "settings.json"
+        data = _json.loads(path.read_text())
+        assert data["spinnerTipsEnabled"] is False
+        assert data["skillOverrides"]["/init"] == "off"
+        assert data["skillOverrides"]["frontend-design"] == "off"
+
+
+def test_daemon_minimal_env_constants():
+    """MINIMAL_HEADLESS_ENV ima ocekivane suppress varijable."""
+    from agent.daemon import MINIMAL_HEADLESS_ENV  # noqa: PLC0415
+    assert MINIMAL_HEADLESS_ENV["CLAUDE_CODE_DISABLE_POLICY_SKILLS"] == "1"
+    assert MINIMAL_HEADLESS_ENV["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert MINIMAL_HEADLESS_ENV["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] == "1"
+
+
 def test_daemon_extract_question_handles_all_payload_shapes():
     """clade_message(content="x") salje {"text": "x"} (bez 'question' key-a) —
     daemon mora to da prepozna i ne sme da vrati None."""

@@ -1,4 +1,4 @@
-"""Clade Agent — protokol v1.1.0 (vidi a2a-protocol.md).
+"""Clade Agent — protokol v1.2.0 (vidi a2a-protocol.md).
 
 Stdio MCP server. Layeri:
 - Bearer token + HMAC E2E + nonce/timestamp (Faza 1)

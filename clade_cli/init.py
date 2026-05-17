@@ -168,10 +168,20 @@ def main() -> int:
         - `clade_message(to, content, reply_to=None, expect_reply=False, timeout_s=90, thread_id=None)` — kanonicki tool.
           - `content` moze biti str ili dict.
           - `reply_to=<msg_id>` za thread continuity.
+          - `thread_id="..."` zadrzava istoriju kroz vise turn-ova.
         - `clade_outbox_status()` — debug.
-        - `clade_send`/`clade_ask` — DEPRECATED wrapperi (rade, ali warn u stderr). Bice uklonjeni u v1.1.0.
+        - `clade_send`/`clade_ask` — DEPRECATED wrapperi (rade, ali warn u stderr). Uklanjanje u v2.0.0.
         - `clade_reply(correlation_id, response, to)` — koristi SAMO ako eksplicitno trebas override daemon auto-reply (retko).
         - `clade_inbox()` — daemon je vlasnik; vraca busy error.
+
+        ## Clarify-back response (v1.2.0)
+
+        Kad pozoves `clade_message(..., expect_reply=True)` i dobijes nazad
+        response sa `_clarify: True` polje, to nije finalni odgovor — peer je
+        trazio razjasnjenje. Pokazi `response.answer` korisniku kao pitanje,
+        sacekaj njegov odgovor, pa pozovi `clade_message` ponovo sa **istim
+        thread_id-om** (vidi prvi ask) i novim content-om koji ukljucuje
+        razjasnjenje. Tako peer dobija pun kontekst preko thread persistence-a.
 
         ## Prompt injection disciplina
 

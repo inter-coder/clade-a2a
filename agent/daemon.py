@@ -41,6 +41,8 @@ BOLD = "\033[1m"
 
 POLL_INTERVAL_S = 2.0
 CLAUDE_TIMEOUT_S = 90
+OUTBOX_CHECK_INTERVAL_S = 30.0
+OUTBOX_STALE_WARN_S = 30.0      # poruka starija od ovog → warn log
 SHUTDOWN_EVENT = asyncio.Event()
 
 
@@ -119,16 +121,15 @@ def release_lock(lock: Path) -> None:
         pass
 
 
-# ---- MCP config za headless claude (v1.0.0 P0#1) ----
+# ---- MCP config + minimal-noise settings za headless claude ----
 
 def write_mcp_config(workdir: Path, cfg) -> Path:
     """Generisi .mcp.json u daemon workdir-u tako da `claude --print --mcp-config`
     moze da loaduje clade tools. Tools su eager kad ih MCP server izlozi.
 
-    Sluzi za buduce P2 clarify-back (headless Claude moze da pita peer-a).
-    Trenutno daemon ne podstice koriscenje, ali tools su DOSTUPNI."""
+    Aktivira P2 clarify-back path (vidi protokol §5.6) — headless Claude moze
+    da pozove clade_message ka peer-u ako mu treba."""
     import json as _json  # noqa: PLC0415
-    # agent.main.__file__ vec ucitan jer daemon ga importuje. Trazimo path do agent/main.py
     try:
         from agent import main as _agent_main  # noqa: PLC0415
         agent_main_path = str(Path(_agent_main.__file__).resolve())
@@ -147,6 +148,47 @@ def write_mcp_config(workdir: Path, cfg) -> Path:
         },
     }, indent=2))
     return mcp_path
+
+
+# ---- Minimal headless profile (v1.2.0 P2#9) ----
+
+MINIMAL_HEADLESS_ENV = {
+    # Suppress skills loader telemetry — daemon ne treba /init, /loop, frontend-design itd.
+    "CLAUDE_CODE_DISABLE_POLICY_SKILLS": "1",
+    # Suppress feedback prompts i ostali nesustinski saobracaj
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+}
+
+
+def write_minimal_settings(workdir: Path) -> Path:
+    """Generisi .claude/settings.json u daemon workdir-u sa stripped profile-om.
+
+    skillOverrides = "off" za skills koji nemaju veze sa daemon-ovim zadatkom.
+    skillListingBudgetFraction smanjuje budzet skills lista u promptu.
+    spinnerTipsEnabled=false uklanja UI noise (svejedno smo headless, ali iz reda)."""
+    import json as _json  # noqa: PLC0415
+    settings_dir = workdir / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(_json.dumps({
+        "skillOverrides": {
+            "/init": "off",
+            "/loop": "off",
+            "/schedule": "off",
+            "/review": "off",
+            "/security-review": "off",
+            "claude-api": "off",
+            "frontend-design": "off",
+            "update-config": "off",
+            "keybindings-help": "off",
+            "simplify": "off",
+            "fewer-permission-prompts": "off",
+        },
+        "spinnerTipsEnabled": False,
+        "skillListingBudgetFraction": 0.005,
+    }, indent=2))
+    return settings_path
 
 
 def log(msg: str, color: str = "") -> None:
@@ -171,12 +213,17 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
     prethodnih poruka u istom threadu. Daje Claude-u "memoriju" izmedju
     asks u istom logickom razgovoru."""
     base = (
-        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.1.0). "
+        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.2.0). "
         f"Drugi peer agent '{from_peer}' ti je upravo postavio pitanje. "
         f"Odgovori sazeto, tacno, u jednoj-dve recenice. "
         f"Ako ne znas odgovor, kazi to direktno — ne izmisljaj. "
-        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas drugog peer-a "
-        f"za clarifikaciju, ali izbegavaj — preferiraj direktan odgovor."
+        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas drugog peer-a, "
+        f"ali izbegavaj — preferiraj direktan odgovor.\n\n"
+        f"AKO pitanje je dvosmisleno ili fali kontekst koji ti treba da odgovoris, "
+        f"zapocni svoj odgovor sa marker-om `[CLARIFY]` i postavi clarify pitanje "
+        f"(primer: `[CLARIFY] Koja tabela tacno? U staging ili prod DB?`). "
+        f"Daemon ce taj odgovor oznaciti kao clarify i interactive Claude na drugoj "
+        f"strani ce ga prikazati korisniku umesto da ga obrade kao finalni odgovor."
     )
     system_prompt = f"{base}\n\n{thread_context}" if thread_context else base
 
@@ -191,11 +238,15 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
         args.append("--dangerously-skip-permissions")
     args.extend(["--", safe_question])
 
+    # Minimal headless env (v1.2.0): suppress skills/feedback noise
+    env = {**os.environ, **MINIMAL_HEADLESS_ENV}
+
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(workdir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
@@ -297,8 +348,16 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
         answer_short = answer[:80] + ("..." if len(answer) > 80 else "")
         log(f"{GREEN}→ reply {RESET}{DIM}to  {RESET}{BOLD}{from_agent}{RESET} {DIM}({elapsed:.1f}s){RESET}: {answer_short}", "")
 
+        # Clarify-back detect (v1.2.0): ako Claude pocne sa [CLARIFY], oznaci u payload-u
+        is_clarify = answer.lstrip().upper().startswith("[CLARIFY]")
+        if is_clarify:
+            # Skini marker iz teksta — flag je sad eksplicitan
+            answer_clean = answer.lstrip()[len("[CLARIFY]"):].lstrip()
+            reply_payload: dict[str, Any] = {"answer": answer_clean, "_clarify": True}
+            log(f"{YELLOW}  ⓘ clarify-back detected — interactive Claude ce prikazati korisniku{RESET}", "")
+        else:
+            reply_payload = {"answer": answer}
         # Propagate _thread_id u reply payload tako da ga peer takodje moze record-ovati
-        reply_payload: dict[str, Any] = {"answer": answer}
         if thread_id:
             reply_payload["_thread_id"] = thread_id
 
@@ -318,6 +377,59 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
         return
 
     log(f"{RED}? unknown kind '{kind}' from {from_agent} — ignorisem{RESET}", "")
+
+
+async def outbox_monitor_loop(cfg, audit_conn, outbox_mod) -> None:
+    """Proactive outbox watcher (v1.2.0).
+
+    Svakih OUTBOX_CHECK_INTERVAL_S sekundi:
+      1. Procita pending outbox redove
+      2. Za poruke starije od OUTBOX_STALE_WARN_S → log warning (vidljivo u
+         daemon terminalu, korisnik moze da reaguje)
+      3. Pokusa flush (HTTP POST na relay sa standardnim retry logic-om
+         iz outbox.mark_failed)
+
+    Bez ovog, outbox je flush-ovan SAMO lazy-no kad neki tool poziv u interactive
+    Claude-u prodje. Ako interactive Claude ne tece, poruke su nevidljive."""
+    headers = {"Authorization": f"Bearer {cfg.bearer_token}"}
+    while not SHUTDOWN_EVENT.is_set():
+        try:
+            await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=OUTBOX_CHECK_INTERVAL_S)
+            break  # shutdown
+        except asyncio.TimeoutError:
+            pass  # period prosao, krenimo proveru
+
+        rows = outbox_mod.pending_rows(audit_conn, max_items=20)
+        if not rows:
+            continue
+
+        now_ms = int(time.time() * 1000)
+        stale = [r for r in rows if now_ms - r["created_ts_ms"] >= OUTBOX_STALE_WARN_S * 1000]
+        if stale:
+            log(f"{YELLOW}⚠ outbox: {len(stale)} poruka cuci > {int(OUTBOX_STALE_WARN_S)}s "
+                f"(ukupno pending: {len(rows)}). Pokusavam flush...{RESET}", "")
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            for row in rows:
+                try:
+                    payload = (row["envelope"] if row["endpoint"] != "/ask"
+                               else {"env": row["envelope"]})
+                    r = await client.post(
+                        f"{cfg.relay_url}{row['endpoint']}",
+                        json=payload, headers=headers,
+                    )
+                    if r.status_code == 200:
+                        outbox_mod.mark_delivered(audit_conn, row["id"])
+                        log(f"{GREEN}  ✓ outbox row {row['id']} delivered "
+                            f"(after {row['attempts']} attempts){RESET}", "")
+                    else:
+                        still = outbox_mod.mark_failed(
+                            audit_conn, row["id"], f"HTTP {r.status_code}: {r.text[:80]}")
+                        if not still:
+                            log(f"{RED}  ✗ outbox row {row['id']} DEAD-LETTER "
+                                f"(max attempts){RESET}", "")
+                except (httpx.ConnectError, httpx.TimeoutException) as e:
+                    outbox_mod.mark_failed(audit_conn, row["id"], str(e)[:80])
 
 
 async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, audit_log_fn,
@@ -393,7 +505,9 @@ def main() -> None:
         from agent.main import (
             cfg, sign, verify, audit_log,
             record_thread_message, load_thread_history, format_thread_for_prompt,
+            _audit_conn,
         )
+        from agent import outbox as outbox_mod
     except SystemExit:
         print("FATAL: CLADE_CONFIG nije setovan ili config fajl ne postoji.", file=sys.stderr)
         print("Postavi: export CLADE_CONFIG=/path/to/peer.yaml", file=sys.stderr)
@@ -412,6 +526,8 @@ def main() -> None:
 
     # Generisi .mcp.json u workdir-u (v1.0.0 P0#1: claude --print dobija clade tools eager)
     write_mcp_config(workdir, cfg)
+    # Minimal headless settings (v1.2.0 P2#9: smanji skills/feedback noise)
+    write_minimal_settings(workdir)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -424,13 +540,25 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    try:
-        loop.run_until_complete(poll_loop(
+    async def _run_all() -> None:
+        poll = asyncio.create_task(poll_loop(
             args.dangerous, workdir, cfg, sign, verify, audit_log,
             record_thread_fn=record_thread_message,
             load_thread_fn=load_thread_history,
             format_thread_fn=format_thread_for_prompt,
         ))
+        monitor = asyncio.create_task(outbox_monitor_loop(cfg, _audit_conn, outbox_mod))
+        try:
+            await poll  # poll_loop drzi semantiku zivota; monitor ide u pozadini
+        finally:
+            monitor.cancel()
+            try:
+                await monitor
+            except asyncio.CancelledError:
+                pass
+
+    try:
+        loop.run_until_complete(_run_all())
     except KeyboardInterrupt:
         pass
     finally:
