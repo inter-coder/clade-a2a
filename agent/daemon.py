@@ -138,21 +138,26 @@ def banner(msg: str) -> None:
 
 
 async def call_claude(question: str, dangerous: bool, workdir: Path,
-                       from_peer: str, my_id: str) -> str:
+                       from_peer: str, my_id: str,
+                       thread_context: str = "") -> str:
     """Spawn `claude --print` da izracuna odgovor na peer-ovo pitanje.
 
     Workdir kontrolise koji CLAUDE.md i .mcp.json se ucitavaju — ali za
     daemon mi koristimo dedicated workdir BEZ CLAUDE.md (da se izbegne
     rekurzivno pollovanje), prosledjujemo sve sto treba direktno u prompt.
-    """
-    system_prompt = (
-        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.0.0). "
+
+    thread_context: opcioni text iz format_thread_for_prompt() — istorija
+    prethodnih poruka u istom threadu. Daje Claude-u "memoriju" izmedju
+    asks u istom logickom razgovoru."""
+    base = (
+        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.1.0). "
         f"Drugi peer agent '{from_peer}' ti je upravo postavio pitanje. "
         f"Odgovori sazeto, tacno, u jednoj-dve recenice. "
         f"Ako ne znas odgovor, kazi to direktno — ne izmisljaj. "
         f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas drugog peer-a "
         f"za clarifikaciju, ali izbegavaj — preferiraj direktan odgovor."
     )
+    system_prompt = f"{base}\n\n{thread_context}" if thread_context else base
 
     mcp_config = workdir / ".mcp.json"
     args = ["claude", "--print", "--append-system-prompt", system_prompt]
@@ -189,8 +194,10 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
 
 
 async def send_reply(correlation_id: str, response: dict[str, Any],
-                      to: str, cfg, sign_fn) -> bool:
-    """Konstrui + potpisi reply envelope, posalji relay-u."""
+                      to: str, cfg, sign_fn,
+                      record_thread_fn=None) -> bool:
+    """Konstrui + potpisi reply envelope, posalji relay-u.
+    Ako record_thread_fn dat i response ima _thread_id, record-ujemo outbound."""
     secret = cfg.peers[to]
     msg_id = str(uuid.uuid4())
     nonce = secrets.token_hex(16)
@@ -207,6 +214,8 @@ async def send_reply(correlation_id: str, response: dict[str, Any],
         "timestamp_ms": ts_ms,
         "hmac": sig,
     }
+    if record_thread_fn:
+        record_thread_fn(msg_id, "out", to, "reply", response)
     async with httpx.AsyncClient() as c:
         try:
             r = await c.post(
@@ -221,11 +230,18 @@ async def send_reply(correlation_id: str, response: dict[str, Any],
             return False
 
 
-async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_fn, audit_log_fn) -> None:
+async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_fn,
+                            audit_log_fn, record_thread_fn=None, load_thread_fn=None,
+                            format_thread_fn=None) -> None:
     from_agent = env["from_agent"]
     kind = env["kind"]
     payload = env["payload"]
     msg_id_short = env["msg_id"][:8]
+    thread_id = payload.get("_thread_id") if isinstance(payload, dict) else None
+
+    # Record incoming u thread_history (v1.1.0)
+    if record_thread_fn:
+        record_thread_fn(env["msg_id"], "in", from_agent, kind, payload)
 
     if kind == "send":
         log(f"{CYAN}← send  {RESET}{DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET}: {payload}", "")
@@ -236,17 +252,34 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
         corr = env.get("correlation_id")
         question = payload.get("question") if isinstance(payload, dict) else str(payload)
         log(f"{YELLOW}← ask   {RESET}{DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET}: {question}", "")
+
+        # Thread context (v1.1.0): ucitaj last N poruka u istom threadu
+        thread_context = ""
+        if thread_id and load_thread_fn and format_thread_fn:
+            history = load_thread_fn(thread_id, 10)
+            # Iskljucujemo trenutnu poruku (vec smo je record-ovali iznad)
+            history = [h for h in history if h.get("msg_id") != env["msg_id"]]
+            thread_context = format_thread_fn(history, cfg.my_id)
+            if history:
+                log(f"{DIM}  ↺ thread {thread_id[:8]}: {len(history)} prethodnih poruka u kontekstu{RESET}", "")
+
         log(f"{DIM}  ⏳ computing reply via claude --print{' --yolo' if dangerous else ''}...{RESET}", "")
 
         t0 = time.time()
-        answer = await call_claude(question, dangerous, workdir, from_agent, cfg.my_id)
+        answer = await call_claude(question, dangerous, workdir, from_agent, cfg.my_id, thread_context)
         elapsed = time.time() - t0
 
         # Truncate prikaza za log (full answer ide u reply)
         answer_short = answer[:80] + ("..." if len(answer) > 80 else "")
         log(f"{GREEN}→ reply {RESET}{DIM}to  {RESET}{BOLD}{from_agent}{RESET} {DIM}({elapsed:.1f}s){RESET}: {answer_short}", "")
 
-        ok = await send_reply(corr, {"answer": answer}, from_agent, cfg, sign_fn)
+        # Propagate _thread_id u reply payload tako da ga peer takodje moze record-ovati
+        reply_payload: dict[str, Any] = {"answer": answer}
+        if thread_id:
+            reply_payload["_thread_id"] = thread_id
+
+        ok = await send_reply(corr, reply_payload, from_agent, cfg, sign_fn,
+                              record_thread_fn=record_thread_fn)
         if ok:
             audit_log_fn("out", "-", from_agent, "reply", f"daemon_auto_{elapsed:.1f}s")
         else:
@@ -263,7 +296,8 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
     log(f"{RED}? unknown kind '{kind}' from {from_agent} — ignorisem{RESET}", "")
 
 
-async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, audit_log_fn) -> None:
+async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, audit_log_fn,
+                     record_thread_fn=None, load_thread_fn=None, format_thread_fn=None) -> None:
     banner(f"Clade Daemon — my_id={cfg.my_id}")
     log(f"relay:       {cfg.relay_url}")
     log(f"peers:       {list(cfg.peers.keys())}")
@@ -298,7 +332,11 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                             audit_log_fn("rejected", env.get("msg_id"), peer, env.get("kind"), "bad_hmac")
                             continue
                         # Process in foreground (sekvencijalno) — paralel bi mozda zakomplikovao audit
-                        await process_message(env, dangerous, workdir, cfg, sign_fn, audit_log_fn)
+                        await process_message(env, dangerous, workdir, cfg, sign_fn,
+                                              audit_log_fn,
+                                              record_thread_fn=record_thread_fn,
+                                              load_thread_fn=load_thread_fn,
+                                              format_thread_fn=format_thread_fn)
                 else:
                     consecutive_errors += 1
                     if consecutive_errors <= 3 or consecutive_errors % 30 == 0:
@@ -328,7 +366,10 @@ def main() -> None:
 
     # Late import — agent.main loaduje config iz CLADE_CONFIG env-a, mora postojati
     try:
-        from agent.main import cfg, sign, verify, audit_log
+        from agent.main import (
+            cfg, sign, verify, audit_log,
+            record_thread_message, load_thread_history, format_thread_for_prompt,
+        )
     except SystemExit:
         print("FATAL: CLADE_CONFIG nije setovan ili config fajl ne postoji.", file=sys.stderr)
         print("Postavi: export CLADE_CONFIG=/path/to/peer.yaml", file=sys.stderr)
@@ -360,7 +401,12 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
     try:
-        loop.run_until_complete(poll_loop(args.dangerous, workdir, cfg, sign, verify, audit_log))
+        loop.run_until_complete(poll_loop(
+            args.dangerous, workdir, cfg, sign, verify, audit_log,
+            record_thread_fn=record_thread_message,
+            load_thread_fn=load_thread_history,
+            format_thread_fn=format_thread_for_prompt,
+        ))
     except KeyboardInterrupt:
         pass
     finally:

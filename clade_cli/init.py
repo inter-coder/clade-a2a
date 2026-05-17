@@ -126,19 +126,19 @@ def main() -> int:
         protocol_src = Path(__file__).parent.parent / "a2a-protocol.md"
         if protocol_src.exists():
             (out / "a2a-protocol.md").write_text(protocol_src.read_text(encoding="utf-8"))
-            print(f"  ✓ a2a-protocol.md (v1.0.0)")
+            print(f"  ✓ a2a-protocol.md")
         else:
             print(f"  ⚠ a2a-protocol.md nije nadjen u {protocol_src}, preskocen")
     except OSError as e:
         print(f"  ⚠ ne mogu da kopiram a2a-protocol.md: {e}")
 
-    # 6) CLAUDE.md template — slim. Protokol je u a2a-protocol.md@v1.0.0.
+    # 6) CLAUDE.md template — slim. Protokol je u a2a-protocol.md (trenutna verzija je u §11 protokola).
     sample_peer = args.peers[1] if len(args.peers) > 1 else args.peers[0]
     claude_md = out / "CLAUDE.md"
     claude_md.write_text(dedent(f"""\
         # Interactive Claude — Clade A2A sender
 
-        Protokol: **[a2a-protocol.md@v1.0.0](./a2a-protocol.md)**. Procitaj ga pre prve A2A operacije.
+        Protokol: **[a2a-protocol.md](./a2a-protocol.md)** (trenutna verzija je u §11). Procitaj ga pre prve A2A operacije.
 
         Peer agenti u allowlist-u: **{', '.join(args.peers)}**.
 

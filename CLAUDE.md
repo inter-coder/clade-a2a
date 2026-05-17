@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Clade A2A — sigurnan A2A message bus za Claude Code instance. Pip paket `clade-a2a`, entry points `clade-relay`, `clade-agent`, `clade-init`. Citaj `README.md` za feature pregled i tri setup mode-a (deploy / wizard / manual).
 
-**Kanonicki protokol je u `a2a-protocol.md` (trenutno v1.0.0)** — single source of truth za envelope schema, HMAC algoritam, MCP tool API, daemon model, file lock semantiku. Kad menjas A2A ponasanje, prvo edituj protokol pa bump verziju (SEMVER pravila u §12 protokola). Ne razbacuj duplikate informacija po CLAUDE.md fajlovima — `clade_cli/init.py` template-i samo referenciraju protokol.
+**Kanonicki protokol je u `a2a-protocol.md` (trenutno v1.1.0)** — single source of truth za envelope schema, HMAC algoritam, MCP tool API, daemon model, file lock semantiku, thread persistence. Kad menjas A2A ponasanje, prvo edituj protokol pa bump verziju (SEMVER pravila u §12 protokola). Ne razbacuj duplikate informacija po CLAUDE.md fajlovima — `clade_cli/init.py` template-i samo referenciraju protokol.
 
 ## Komande
 
@@ -42,7 +42,7 @@ Tri komponente, gradjene preko 5 razvojnih faza (vidi `ROADMAP.md`):
 
 1. **`relay/`** — FastAPI dispatcher. Bearer auth + nonce dedup + ts skju validacija. **NE cita HMAC** (E2E je posao receiver-a). Pluggable storage: in-memory ili Redis (`relay/store.py`, biranje preko `REDIS_URL`). `pending_asks` su uvek u memoriji — `asyncio.Future` nije serijabilan; restart fail-uje in-flight asks (svesno).
 
-2. **`agent/main.py`** — stdio MCP server koji Claude Code spawn-uje preko `.mcp.json`. Implementira `clade_message` (kanonicki tool, v1.0.0), `clade_inbox`, `clade_reply`, `clade_outbox_status`, plus deprecated `clade_send`/`clade_ask` wrappere (bice izbaceni u v1.1.0). HMAC sign/verify, SQLite audit + outbox.
+2. **`agent/main.py`** — stdio MCP server koji Claude Code spawn-uje preko `.mcp.json`. Implementira `clade_message` (kanonicki tool, v1.0.0+), `clade_inbox`, `clade_reply`, `clade_outbox_status`, plus deprecated `clade_send`/`clade_ask` wrappere (uklanjanje u v2.0.0). HMAC sign/verify, SQLite audit + outbox. Thread persistence helperi: `record_thread_message`, `load_thread_history`, `format_thread_for_prompt` (v1.1.0+).
 
 3. **`agent/daemon.py`** — long-running poller koji peer masina drzi up. Polluje `/inbox` svake 2s, spawn-uje `claude --print --mcp-config <wd>/.mcp.json` za auto-reply na `ask` poruke. **Daemon je single-owner inbox-a** preko file lock-a (`<audit_db_dir>/<peer>-daemon.lock`); `clade_inbox` u agent-u vraca busy error ako lock zivi. To je v1.0.0 promena — pre toga je race protekcija bila samo pravilo u promptu.
 
@@ -66,4 +66,4 @@ Tri komponente, gradjene preko 5 razvojnih faza (vidi `ROADMAP.md`):
 
 ## Otvorene tacke
 
-`samozapazanja.md` u root-u sadrzi peer-to-peer dijalog izmedju dva A2A agenta o sledecim iteracijama. P0 stavke su isporucene u v1.0.0. P1/P2 (`thread_id` persistence, simetricni clarify-back, minimalan headless system-prompt) jos cekaju.
+`samozapazanja.md` u root-u sadrzi peer-to-peer dijalog izmedju dva A2A agenta o sledecim iteracijama. P0 isporuceno u v1.0.0, P1 (thread persistence + timeout sync) u v1.1.0. P2 (simetricni clarify-back, outbox push notif, minimalan headless system-prompt) jos cekaju.

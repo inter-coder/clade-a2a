@@ -248,3 +248,102 @@ async def test_inbox_passes_when_lock_is_stale(relay_process, alice_config):
         assert "error" not in result or "busy" not in result.get("error", "").lower()
     finally:
         lock.unlink(missing_ok=True)
+
+
+# ---- v1.1.0 thread persistence tests ----
+
+
+@pytest.mark.asyncio
+async def test_thread_message_recorded_on_send(relay_process, alice_config, bob_config):
+    """clade_message sa thread_id record-uje u alice-ovom thread_history."""
+    alice = _load_agent_module(alice_config)
+    r = await alice.clade_message(to="bob", content="msg1", thread_id="t-abc")
+    assert r.get("ok") is True
+
+    history = alice.load_thread_history("t-abc")
+    assert len(history) == 1
+    assert history[0]["direction"] == "out"
+    assert history[0]["peer"] == "bob"
+    assert history[0]["kind"] == "send"
+    assert history[0]["payload"]["text"] == "msg1"
+    assert history[0]["payload"]["_thread_id"] == "t-abc"
+
+
+@pytest.mark.asyncio
+async def test_thread_history_chronological_order_and_limit(relay_process, alice_config):
+    """load_thread_history vraca hronoloski (oldest first), poslednji N."""
+    alice = _load_agent_module(alice_config)
+    for i in range(5):
+        await alice.clade_message(to="bob", content=f"msg{i}", thread_id="t-order")
+        # Mali sleep da ts_ms budu razliciti (1ms granularnost je dovoljna)
+        await asyncio.sleep(0.01)
+
+    history = alice.load_thread_history("t-order", max_messages=3)
+    assert len(history) == 3
+    # Treba da bude poslednje 3, hronoloski rastuce
+    assert history[0]["payload"]["text"] == "msg2"
+    assert history[1]["payload"]["text"] == "msg3"
+    assert history[2]["payload"]["text"] == "msg4"
+
+
+@pytest.mark.asyncio
+async def test_thread_not_recorded_without_thread_id(relay_process, alice_config):
+    """Bez thread_id-a, thread_history ostaje prazan (no kontaminacija)."""
+    alice = _load_agent_module(alice_config)
+    await alice.clade_message(to="bob", content="bez threada")
+
+    history = alice.load_thread_history("")
+    assert history == []
+    # Direktan SQL count provera
+    cur = alice._audit_conn.execute("SELECT COUNT(*) FROM thread_history")
+    assert cur.fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_thread_incoming_recorded_via_inbox(relay_process, alice_config, bob_config):
+    """Kad bob ucita inbox sa thread-tagovanom porukom, record-uje incoming."""
+    alice = _load_agent_module(alice_config)
+    await alice.clade_message(to="bob", content="ka bobu", thread_id="t-incoming-unique")
+
+    bob = _load_agent_module(bob_config)
+    inbox = await bob.clade_inbox()
+    # Session-scoped relay nakuplja poruke iz prethodnih testova; samo proveravamo
+    # da naša thread-tagovana poruka jeste medju verifikovanim
+    matching = [m for m in inbox["messages"]
+                if m["payload"].get("_thread_id") == "t-incoming-unique"]
+    assert len(matching) == 1
+    assert matching[0]["from_agent"] == "alice"
+
+    history = bob.load_thread_history("t-incoming-unique")
+    assert len(history) == 1
+    assert history[0]["direction"] == "in"
+    assert history[0]["peer"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_format_thread_for_prompt_basic_shape(relay_process, alice_config):
+    """format_thread_for_prompt produces non-empty text za non-empty history,
+    skraceno bez _meta polja."""
+    alice = _load_agent_module(alice_config)
+    history = [
+        {"msg_id": "1", "ts_ms": 1700000000000, "direction": "in",
+         "peer": "alice", "kind": "ask", "payload": {"question": "Q?", "_thread_id": "t1"}},
+        {"msg_id": "2", "ts_ms": 1700000001000, "direction": "out",
+         "peer": "alice", "kind": "reply", "payload": {"answer": "A", "_thread_id": "t1"}},
+    ]
+    text = alice.format_thread_for_prompt(history, "bob")
+    assert "Thread continuity" in text
+    assert "Q?" in text
+    assert "A" in text
+    # _thread_id ne sme da bude u clean payload-u
+    assert "_thread_id" not in text
+
+
+@pytest.mark.asyncio
+async def test_relay_ask_default_timeout_is_90(relay_process, relay_url):
+    """AskBody.timeout_s default je 90s u v1.1.0 (bio 120)."""
+    from relay.main import AskBody  # noqa: PLC0415
+    # Pydantic exposed schema
+    schema = AskBody.model_json_schema()
+    timeout_default = schema["properties"]["timeout_s"].get("default")
+    assert timeout_default == 90, f"Expected timeout_s default 90, got {timeout_default}"

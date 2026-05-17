@@ -515,7 +515,7 @@ clade-a2a/
 | Timestamp skew | 300_000ms | `relay/main.py:TS_SKEW_MS` |
 | Inbox max per agent | 1000 | `relay/main.py:INBOX_MAX` |
 | Audit ring buffer | 10_000 | `relay/main.py:AUDIT_MAX` |
-| Ask default timeout | 120s | `relay/main.py:ASK_TIMEOUT_DEFAULT` (override per call) |
+| Ask default timeout | 90s | `relay/main.py:AskBody.timeout_s` (override per call); v1.1.0+ |
 
 ---
 

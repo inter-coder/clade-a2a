@@ -85,7 +85,7 @@ class ReplyEnvelope(BaseModel):
 
 class AskBody(BaseModel):
     env: Envelope
-    timeout_s: int = 120
+    timeout_s: int = 90
 
 
 # ---- Auth ----

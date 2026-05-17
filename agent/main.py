@@ -1,4 +1,4 @@
-"""Clade Agent — protokol v1.0.0 (vidi a2a-protocol.md).
+"""Clade Agent — protokol v1.1.0 (vidi a2a-protocol.md).
 
 Stdio MCP server. Layeri:
 - Bearer token + HMAC E2E + nonce/timestamp (Faza 1)
@@ -6,6 +6,8 @@ Stdio MCP server. Layeri:
 - Outbox buffer + exponencijalni backoff (Faza 4)
 - Unifikovan `clade_message` tool (v1.0.0)
 - File-lock provera u `clade_inbox` — sprecava race sa daemon poll-om (v1.0.0)
+- Thread persistence preko `_thread_id` u payload-u (v1.1.0) — peer-by-peer
+  SQLite tabela `thread_history`. Daemon ucitava last N u system prompt.
 
 Outbox semantika: ako relay vrati 5xx/429 ili veza padne, fire-and-forget
 poruka ide u SQLite outbox umesto da se gubi. Sledeci tool poziv lazy-flush-uje.
@@ -81,6 +83,23 @@ def _init_audit_db() -> sqlite3.Connection:
             note TEXT
         )
     """)
+    # Thread history (v1.1.0): per-peer log poruka tagovanih sa _thread_id
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS thread_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id TEXT NOT NULL,
+            msg_id TEXT NOT NULL,
+            ts_ms INTEGER NOT NULL,
+            direction TEXT NOT NULL,  -- "out" | "in"
+            peer TEXT NOT NULL,
+            kind TEXT,                 -- "send" | "ask" | "reply"
+            payload_json TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_thread_history_thread
+        ON thread_history(thread_id, ts_ms)
+    """)
     conn.commit()
     # Inicijalizuj outbox tabelu (deli istu DB)
     outbox.init_outbox(conn)
@@ -134,6 +153,68 @@ def audit_log(direction: str, msg_id: str | None, peer: str | None, kind: str | 
         (int(time.time() * 1000), direction, msg_id, peer, kind, status, note),
     )
     _audit_conn.commit()
+
+
+# ---- Thread history (v1.1.0) ----
+
+def record_thread_message(
+    msg_id: str, direction: str, peer: str, kind: str, payload: dict[str, Any],
+) -> None:
+    """Persist poruke u thread_history ako payload sadrzi _thread_id.
+    No-op ako nema _thread_id — neti-tagovan saobracaj ne kontaminira tabelu."""
+    thread_id = payload.get("_thread_id") if isinstance(payload, dict) else None
+    if not thread_id:
+        return
+    _audit_conn.execute(
+        """INSERT INTO thread_history
+           (thread_id, msg_id, ts_ms, direction, peer, kind, payload_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (thread_id, msg_id, int(time.time() * 1000), direction, peer, kind, json.dumps(payload)),
+    )
+    _audit_conn.commit()
+
+
+def load_thread_history(thread_id: str, max_messages: int = 10) -> list[dict[str, Any]]:
+    """Vrati last N poruka iz threada u HRONOLOSKOM redu (najstarija prva).
+    Prazan list ako thread_id ne postoji."""
+    if not thread_id:
+        return []
+    rows = _audit_conn.execute(
+        """SELECT msg_id, ts_ms, direction, peer, kind, payload_json
+           FROM thread_history
+           WHERE thread_id = ?
+           ORDER BY ts_ms DESC
+           LIMIT ?""",
+        (thread_id, max_messages),
+    ).fetchall()
+    return [
+        {
+            "msg_id": r[0], "ts_ms": r[1], "direction": r[2],
+            "peer": r[3], "kind": r[4], "payload": json.loads(r[5]),
+        }
+        for r in reversed(rows)
+    ]
+
+
+def format_thread_for_prompt(history: list[dict[str, Any]], my_id: str) -> str:
+    """Formatiraj history kao text-section za pass u system prompt.
+    Hronoloski, sazet, sa direction marker-ima."""
+    if not history:
+        return ""
+    lines = ["[Thread continuity — prethodne poruke u istom threadu, hronoloski:]"]
+    for h in history:
+        ts = time.strftime("%H:%M:%S", time.localtime(h["ts_ms"] / 1000))
+        if h["direction"] == "in":
+            arrow = f"← {h['peer']}"
+        else:
+            arrow = f"→ {h['peer']}"
+        kind = h.get("kind") or "?"
+        # Skraceno payload prikaz — bez _meta polja
+        clean_payload = {k: v for k, v in h["payload"].items() if not k.startswith("_")}
+        payload_str = json.dumps(clean_payload, ensure_ascii=False)[:200]
+        lines.append(f"  {ts}  {arrow}  [{kind}]  {payload_str}")
+    lines.append("[Kraj thread konteksta. Tvoj sadasnji odgovor:]")
+    return "\n".join(lines)
 
 
 # ---- HMAC ----
@@ -245,6 +326,7 @@ async def _do_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"error": err}
 
     env = _make_envelope("send", to, payload)
+    record_thread_message(env["msg_id"], "out", to, "send", payload)
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(f"{cfg.relay_url}/send", json=env, headers=_auth_headers(), timeout=10)
@@ -276,6 +358,7 @@ async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str,
 
     correlation_id = str(uuid.uuid4())
     env = _make_envelope("ask", to, payload, correlation_id=correlation_id)
+    record_thread_message(env["msg_id"], "out", to, "ask", payload)
     async with httpx.AsyncClient(timeout=timeout_s + 10) as client:
         r = await client.post(
             f"{cfg.relay_url}/ask",
@@ -298,6 +381,7 @@ async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str,
         return {"error": "Reply HMAC verification failed — potential MITM ili kompromitovan peer"}
 
     audit_log("in", reply_env["msg_id"], to, "reply", "verified")
+    record_thread_message(reply_env["msg_id"], "in", to, "reply", reply_env["payload"])
     return {"ok": True, "response": reply_env["payload"], "correlation_id": correlation_id}
 
 
@@ -372,10 +456,11 @@ async def clade_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 120) -> dict[str, Any]:
+async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 90) -> dict[str, Any]:
     """DEPRECATED — koristi clade_message(to, content, expect_reply=True, timeout_s=...).
 
-    Thin wrapper. Pazi: default timeout je 120 (legacy); novi clade_message koristi 90.
+    Thin wrapper. Default timeout je 90s od v1.1.0 (bio 120s u v1.0.x — vidi
+    protokol §11 v1.1.0 ChangeLog).
     """
     _warn_deprecated("clade_ask", "clade_message(..., expect_reply=True)")
     return await _do_ask(to, payload, timeout_s)
@@ -445,6 +530,7 @@ async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
             rejected.append({"msg_id": env.get("msg_id"), "reason": "HMAC verification failed"})
             continue
         audit_log("in", env["msg_id"], peer, env["kind"], "verified")
+        record_thread_message(env["msg_id"], "in", peer, env["kind"], env.get("payload") or {})
         # Cisti za Claude — ne pokazuj HMAC i nonce (tehnicki detalji)
         clean = {
             "msg_id": env["msg_id"],
@@ -493,6 +579,7 @@ async def clade_reply(correlation_id: str, response: dict[str, Any], to: str) ->
         return {"error": err}
 
     env = _make_envelope("reply", to, response, correlation_id=correlation_id)
+    record_thread_message(env["msg_id"], "out", to, "reply", response)
 
     try:
         async with httpx.AsyncClient() as client:
