@@ -131,3 +131,120 @@ async def test_outbox_queue_on_relay_down(workdir, alice_config, shared_secret, 
     # Status izvestava 1 pending
     status = await alice.clade_outbox_status()
     assert status["stats"]["pending"] >= 1
+
+
+# ---- v1.0.0 clade_message + lock tests ----
+
+
+@pytest.mark.asyncio
+async def test_clade_message_send_fire_and_forget(relay_process, alice_config, bob_config):
+    """clade_message(expect_reply=False) == fire-and-forget send."""
+    alice = _load_agent_module(alice_config)
+    r = await alice.clade_message(to="bob", content="hello via clade_message")
+    assert r.get("ok") is True
+    assert "msg_id" in r
+    assert "response" not in r
+
+    bob = _load_agent_module(bob_config)
+    inbox = await bob.clade_inbox()
+    assert inbox["count"] == 1
+    msg = inbox["messages"][0]
+    assert msg["kind"] == "send"
+    assert msg["payload"]["text"] == "hello via clade_message"
+
+
+@pytest.mark.asyncio
+async def test_clade_message_dict_content(relay_process, alice_config, bob_config):
+    """content kao dict se prosledjuje as-is."""
+    alice = _load_agent_module(alice_config)
+    r = await alice.clade_message(to="bob", content={"custom": "field", "x": 42})
+    assert r.get("ok") is True
+
+    bob = _load_agent_module(bob_config)
+    inbox = await bob.clade_inbox()
+    assert inbox["count"] == 1
+    assert inbox["messages"][0]["payload"] == {"custom": "field", "x": 42}
+
+
+@pytest.mark.asyncio
+async def test_clade_message_reply_to_threading(relay_process, alice_config, bob_config):
+    """reply_to + thread_id se serijalizuju u payload kao _reply_to / _thread_id."""
+    alice = _load_agent_module(alice_config)
+    r = await alice.clade_message(
+        to="bob",
+        content="follow-up",
+        reply_to="parent-msg-123",
+        thread_id="thread-abc",
+    )
+    assert r.get("ok") is True
+
+    bob = _load_agent_module(bob_config)
+    inbox = await bob.clade_inbox()
+    payload = inbox["messages"][0]["payload"]
+    assert payload["_reply_to"] == "parent-msg-123"
+    assert payload["_thread_id"] == "thread-abc"
+    assert payload["text"] == "follow-up"
+
+
+@pytest.mark.asyncio
+async def test_clade_message_expect_reply_roundtrip(relay_process, alice_config, bob_config):
+    """clade_message(expect_reply=True) ide kroz /ask, blokira do reply-a."""
+    alice = _load_agent_module(alice_config)
+    bob = _load_agent_module(bob_config)
+
+    ask_task = asyncio.create_task(
+        alice.clade_message(to="bob", content="3+4", expect_reply=True, timeout_s=10)
+    )
+    await asyncio.sleep(0.5)
+
+    # Bob reload (drugi config) + reply
+    import sys as s
+    s.modules.pop("agent.main", None)
+    s.modules.pop("agent.outbox", None)
+    os.environ["CLADE_CONFIG"] = str(bob_config)
+    import agent.main as bobm  # noqa: PLC0415
+
+    inbox = await bobm.clade_inbox()
+    assert inbox["count"] == 1
+    ask_msg = inbox["messages"][0]
+    assert ask_msg["kind"] == "ask"
+    corr = ask_msg["correlation_id"]
+    assert corr is not None
+
+    await bobm.clade_reply(correlation_id=corr, response={"answer": "7"}, to="alice")
+
+    res = await ask_task
+    assert res.get("ok") is True
+    assert res["response"] == {"answer": "7"}
+
+
+@pytest.mark.asyncio
+async def test_inbox_blocked_by_active_daemon_lock(relay_process, alice_config):
+    """Ako lock fajl postoji + PID zivi → clade_inbox vraca busy."""
+    alice = _load_agent_module(alice_config)
+    lock = alice._daemon_lock_path()
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()))  # nasa PID = sigurno zivi
+    try:
+        result = await alice.clade_inbox()
+        assert "error" in result
+        assert "busy" in result["error"].lower()
+        assert str(os.getpid()) in result["error"]
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_inbox_passes_when_lock_is_stale(relay_process, alice_config):
+    """Stale lock (PID koji ne postoji) ne blokira clade_inbox."""
+    alice = _load_agent_module(alice_config)
+    lock = alice._daemon_lock_path()
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    # PID 999999 — gotovo sigurno ne postoji na ovoj masini
+    lock.write_text("999999")
+    try:
+        result = await alice.clade_inbox()
+        # Treba ili da uspesno citra (count=0) ili da vrati error koji NIJE busy
+        assert "error" not in result or "busy" not in result.get("error", "").lower()
+    finally:
+        lock.unlink(missing_ok=True)

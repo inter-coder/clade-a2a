@@ -44,6 +44,90 @@ CLAUDE_TIMEOUT_S = 90
 SHUTDOWN_EVENT = asyncio.Event()
 
 
+# ---- File lock (v1.0.0) ----
+
+def _daemon_lock_path(cfg) -> Path:
+    """Lock fajl pored audit DB-a, per-peer naming."""
+    audit_db = Path(cfg.audit_db).expanduser()
+    return audit_db.parent / f"{cfg.my_id}-daemon.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
+def acquire_lock(cfg) -> Path:
+    """Acquire daemon file lock. Vrati path.
+
+    Ako lock postoji + PID jos zivi → vec tece drugi daemon, exit 1.
+    Ako lock postoji ali PID mrtav → stale, prebrise.
+    """
+    lock = _daemon_lock_path(cfg)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    if lock.exists():
+        try:
+            existing_pid = int(lock.read_text().strip())
+        except (ValueError, OSError):
+            existing_pid = -1
+        if existing_pid > 0 and _pid_alive(existing_pid):
+            print(
+                f"[clade-daemon] ERROR: drugi daemon vec tece za peer '{cfg.my_id}' (PID {existing_pid}).\n"
+                f"  Lock fajl: {lock}\n"
+                f"  Stop ga prvo (kill {existing_pid}) ili pokreni za drugi peer.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Stale lock — prebrisi
+        print(f"[clade-daemon] info: stale lock ({existing_pid}), prebrisujem", file=sys.stderr)
+
+    lock.write_text(str(os.getpid()))
+    return lock
+
+
+def release_lock(lock: Path) -> None:
+    try:
+        # Sanity check: jos uvek nasa PID? (race: drugi daemon mogao da preuzme)
+        if lock.exists() and lock.read_text().strip() == str(os.getpid()):
+            lock.unlink()
+    except OSError:
+        pass
+
+
+# ---- MCP config za headless claude (v1.0.0 P0#1) ----
+
+def write_mcp_config(workdir: Path, cfg) -> Path:
+    """Generisi .mcp.json u daemon workdir-u tako da `claude --print --mcp-config`
+    moze da loaduje clade tools. Tools su eager kad ih MCP server izlozi.
+
+    Sluzi za buduce P2 clarify-back (headless Claude moze da pita peer-a).
+    Trenutno daemon ne podstice koriscenje, ali tools su DOSTUPNI."""
+    import json as _json  # noqa: PLC0415
+    # agent.main.__file__ vec ucitan jer daemon ga importuje. Trazimo path do agent/main.py
+    try:
+        from agent import main as _agent_main  # noqa: PLC0415
+        agent_main_path = str(Path(_agent_main.__file__).resolve())
+    except Exception:
+        agent_main_path = str(Path(__file__).parent / "main.py")
+
+    config_env_path = os.environ.get("CLADE_CONFIG", "")
+    mcp_path = workdir / ".mcp.json"
+    mcp_path.write_text(_json.dumps({
+        "mcpServers": {
+            "clade": {
+                "command": sys.executable,
+                "args": [agent_main_path],
+                "env": {"CLADE_CONFIG": config_env_path},
+            },
+        },
+    }, indent=2))
+    return mcp_path
+
+
 def log(msg: str, color: str = "") -> None:
     ts = time.strftime("%H:%M:%S")
     print(f"{DIM}[{ts}]{RESET} {color}{msg}{RESET}", flush=True)
@@ -62,13 +146,18 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
     rekurzivno pollovanje), prosledjujemo sve sto treba direktno u prompt.
     """
     system_prompt = (
-        f"Ti si '{my_id}' agent u Clade A2A sistemu. "
+        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.0.0). "
         f"Drugi peer agent '{from_peer}' ti je upravo postavio pitanje. "
         f"Odgovori sazeto, tacno, u jednoj-dve recenice. "
-        f"Ako ne znas odgovor, kaži to direktno — ne izmišljaj."
+        f"Ako ne znas odgovor, kazi to direktno — ne izmisljaj. "
+        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas drugog peer-a "
+        f"za clarifikaciju, ali izbegavaj — preferiraj direktan odgovor."
     )
 
+    mcp_config = workdir / ".mcp.json"
     args = ["claude", "--print", "--append-system-prompt", system_prompt]
+    if mcp_config.exists():
+        args.extend(["--mcp-config", str(mcp_config)])
     if dangerous:
         args.append("--dangerously-skip-permissions")
     args.extend(["--", question])
@@ -245,6 +334,9 @@ def main() -> None:
         print("Postavi: export CLADE_CONFIG=/path/to/peer.yaml", file=sys.stderr)
         sys.exit(1)
 
+    # File lock pre svega — sprecava dva daemon-a za isti peer (v1.0.0)
+    lock_path = acquire_lock(cfg)
+
     # Daemon workdir za claude --print
     if args.workdir:
         workdir = Path(args.workdir).expanduser().resolve()
@@ -252,6 +344,9 @@ def main() -> None:
     else:
         import tempfile
         workdir = Path(tempfile.mkdtemp(prefix=f"clade-daemon-{cfg.my_id}-"))
+
+    # Generisi .mcp.json u workdir-u (v1.0.0 P0#1: claude --print dobija clade tools eager)
+    write_mcp_config(workdir, cfg)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -270,6 +365,7 @@ def main() -> None:
         pass
     finally:
         loop.close()
+        release_lock(lock_path)
         log(f"{GREEN}daemon stopped cleanly.{RESET}", "")
 
 

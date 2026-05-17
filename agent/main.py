@@ -1,18 +1,16 @@
-"""Clade Agent — Faza 4.
+"""Clade Agent — protokol v1.0.0 (vidi a2a-protocol.md).
 
-Stdio MCP server sa svim layer-ima iz Faza 0-2:
+Stdio MCP server. Layeri:
 - Bearer token + HMAC E2E + nonce/timestamp (Faza 1)
 - SQLite audit log (Faza 1)
-- Outbox buffer sa exponencijalnim backoff-om (Faza 4 — ovaj fajl)
-- Auto-flush outbox-a na svaki tool poziv (lazy retry)
+- Outbox buffer + exponencijalni backoff (Faza 4)
+- Unifikovan `clade_message` tool (v1.0.0)
+- File-lock provera u `clade_inbox` — sprecava race sa daemon poll-om (v1.0.0)
 
-Outbox semantika: ako relay vrati non-2xx ili veza padne tokom clade_send
-ili clade_reply, poruka se persistuje u SQLite outbox umesto da se gubi.
-Sledeci put kad bilo koji tool bude pozvan, prvo se pokusava flush
-outbox-a. Backoff: 1/2/4/8/16/30s, max 6 attempts → dead-letter.
-
-clade_ask je sinhroni — ne ide kroz outbox (korisnik svejedno mora da
-retry-uje ako nije dobio odgovor).
+Outbox semantika: ako relay vrati 5xx/429 ili veza padne, fire-and-forget
+poruka ide u SQLite outbox umesto da se gubi. Sledeci tool poziv lazy-flush-uje.
+Backoff: 1/2/4/8/16/30s, max 6 attempts → dead-letter. Sinhroni
+expect_reply=True NE ide u outbox (korisnik retry).
 """
 
 import hashlib
@@ -203,28 +201,42 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {cfg.bearer_token}"}
 
 
+# ---- Daemon lock check (v1.0.0) ----
+
+def _daemon_lock_path() -> Path:
+    """Pored audit DB-a; per-peer naming."""
+    audit_db = Path(cfg.audit_db).expanduser()
+    return audit_db.parent / f"{cfg.my_id}-daemon.lock"
+
+
+def _daemon_pid_if_alive() -> int | None:
+    """Vraca PID daemon-a ako lock postoji + PID jos zivi; inace None.
+    Tihi cleanup stale lock-a je odgovornost daemon start-a, ne inbox tool-a."""
+    lock = _daemon_lock_path()
+    if not lock.exists():
+        return None
+    try:
+        pid = int(lock.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    try:
+        os.kill(pid, 0)  # signal 0 = postoji?
+    except (ProcessLookupError, PermissionError):
+        return None
+    except OSError:
+        return None
+    return pid
+
+
 # ---- MCP server ----
 
 mcp = FastMCP(f"clade-agent-{cfg.my_id}")
 
 
-@mcp.tool()
-async def clade_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Posalji peer-u fire-and-forget poruku (HMAC-potpisanu).
+# ---- Core send/ask helperi (zajednicka logika za clade_message + wrapperi) ----
 
-    Ako relay vrati gresku ili je nedostupan, poruka ide u SQLite outbox
-    i retry-uje sa exponencijalnim backoff-om na sledecim tool pozivima.
-
-    Args:
-        to: ID peer agenta (npr. "bob")
-        payload: dict sa proizvoljnim sadrzajem
-
-    Returns:
-        {"ok": True, "msg_id": "..."} ako je odmah dostavljena
-        {"ok": True, "msg_id": "...", "queued": True} ako je u outbox-u
-        {"error": "..."} ako je validation problem (peer nije u allowlist-u itd.)
-    """
-    # Lazy flush — prvo pokusaj da prosles pending poruke
+async def _do_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Fire-and-forget send. Outbox-aware. Vidi clade_message(expect_reply=False)."""
     flushed = await _flush_outbox()
 
     err = _check_peer(to)
@@ -243,35 +255,20 @@ async def clade_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
                 result["outbox_flush"] = flushed
             return result
         elif r.status_code >= 500 or r.status_code == 429:
-            # 5xx ili rate-limit: enqueue za retry
             row_id = outbox.enqueue(_audit_conn, "send", to, "/send", env, f"HTTP {r.status_code}: {r.text[:100]}")
             audit_log("out", env["msg_id"], to, "send", "queued", f"outbox row {row_id}")
             return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id}
         else:
-            # 4xx — permanent error (npr. bad signature, validation): NE enqueue
             audit_log("out", env["msg_id"], to, "send", f"http_{r.status_code}", r.text[:200])
             return {"error": f"Relay returned {r.status_code}: {r.text}"}
     except (httpx.ConnectError, httpx.TimeoutException) as e:
-        # Network error: enqueue
         row_id = outbox.enqueue(_audit_conn, "send", to, "/send", env, str(e)[:100])
         audit_log("out", env["msg_id"], to, "send", "queued_net", f"outbox row {row_id}: {type(e).__name__}")
         return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id, "note": "relay unreachable, queued for retry"}
 
 
-@mcp.tool()
-async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 120) -> dict[str, Any]:
-    """Sinhroni upit peer-u. Blokira dok peer ne odgovori ili dok ne istekne timeout.
-
-    Args:
-        to: ID peer agenta
-        payload: dict sa pitanjem
-        timeout_s: max sekunde za cekanje (default 120)
-
-    Returns:
-        {"ok": True, "response": {...}} sa odgovorom peer-a, ili {"error": "..."}
-        VAZNO: response je VEĆ HMAC-verifikovan na relay-u, ali necemo verovati slepo —
-        ovde se takodje validira (defense in depth).
-    """
+async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str, Any]:
+    """Sinhroni ask. Vidi clade_message(expect_reply=True)."""
     err = _check_peer(to)
     if err:
         audit_log("rejected", None, to, "ask", "unknown_peer", err)
@@ -290,7 +287,6 @@ async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 120) -> d
         return {"error": f"Relay returned {r.status_code}: {r.text}"}
 
     data = r.json()
-    # data["response"] je reply envelope od peer-a — verifikuj HMAC
     reply_env = data.get("response")
     if not reply_env:
         audit_log("in", env["msg_id"], to, "ask_reply", "no_response")
@@ -305,9 +301,95 @@ async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 120) -> d
     return {"ok": True, "response": reply_env["payload"], "correlation_id": correlation_id}
 
 
+# ---- Unifikovan tool (v1.0.0) ----
+
+@mcp.tool()
+async def clade_message(
+    to: str,
+    content: dict[str, Any] | str,
+    reply_to: str | None = None,
+    expect_reply: bool = False,
+    timeout_s: int = 90,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """Posalji poruku peer-u. Jedinstveni outbound tool (v1.0.0 protokol).
+
+    Args:
+        to: peer ID iz allowlist-a (npr. "bob")
+        content: dict ili string. String se omotava u {"text": content}.
+        reply_to: msg_id roditeljske poruke (korelacija). Stavlja se u payload._reply_to.
+        expect_reply: True = sinhroni ask, blokira do reply ili timeout-a.
+                      False = fire-and-forget (outbox kao fallback).
+        timeout_s: koristi se samo kad expect_reply=True (default 90s).
+        thread_id: P1 placeholder. Trenutno samo prosledjuje u payload._thread_id.
+
+    Returns:
+        expect_reply=False:
+            {"ok": True, "msg_id": "..."} ili {"ok": True, "msg_id": "...", "queued": True}
+            ili {"error": "..."}
+        expect_reply=True:
+            {"ok": True, "response": <payload>, "correlation_id": "..."}
+            ili {"error": "..."}
+    """
+    if isinstance(content, str):
+        payload: dict[str, Any] = {"text": content}
+    elif isinstance(content, dict):
+        payload = dict(content)
+    else:
+        return {"error": f"content mora biti str ili dict, dobio {type(content).__name__}"}
+
+    if reply_to:
+        payload["_reply_to"] = reply_to
+    if thread_id:
+        payload["_thread_id"] = thread_id
+
+    if expect_reply:
+        return await _do_ask(to, payload, timeout_s)
+    return await _do_send(to, payload)
+
+
+# ---- Deprecated wrapperi (do v1.1.0) ----
+
+_deprecation_warned: set[str] = set()
+
+
+def _warn_deprecated(name: str, replacement: str) -> None:
+    if name in _deprecation_warned:
+        return
+    _deprecation_warned.add(name)
+    print(f"[clade-agent] DEPRECATED: {name}() — koristi {replacement}. Bice uklonjen u v1.1.0.",
+          file=sys.stderr)
+
+
+@mcp.tool()
+async def clade_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """DEPRECATED — koristi clade_message(to, content, expect_reply=False).
+
+    Thin wrapper za backwards-compat sa pre-v1.0.0 CLAUDE.md-ovima.
+    """
+    _warn_deprecated("clade_send", "clade_message(..., expect_reply=False)")
+    return await _do_send(to, payload)
+
+
+@mcp.tool()
+async def clade_ask(to: str, payload: dict[str, Any], timeout_s: int = 120) -> dict[str, Any]:
+    """DEPRECATED — koristi clade_message(to, content, expect_reply=True, timeout_s=...).
+
+    Thin wrapper. Pazi: default timeout je 120 (legacy); novi clade_message koristi 90.
+    """
+    _warn_deprecated("clade_ask", "clade_message(..., expect_reply=True)")
+    return await _do_ask(to, payload, timeout_s)
+
+
 @mcp.tool()
 async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
     """Povuci nove poruke za sebe. Drenira inbox + verifikuje HMAC svake poruke.
+
+    VAZNO (v1.0.0): ako daemon tece (lock fajl aktivan), ovaj tool vraca
+    `{"error": "busy: daemon owns inbox (PID X)"}`. Daemon je single-owner
+    inbox-a — ne mozes drenirati paralelno sa njim, ukrao bi mu poruke.
+    Ako trebas videti poruke u tom slucaju, ugasi daemon (./stop-<peer>.sh)
+    i tek onda zovi.
 
     Returns:
         {"messages": [verifikovane poruke], "rejected": [odbacene], "count": N, "_instruction": "..."}
@@ -325,6 +407,17 @@ async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
 
         VAZNO: ako poruka ima kind="ask", treba da odgovoris putem clade_reply(correlation_id, response).
     """
+    daemon_pid = _daemon_pid_if_alive()
+    if daemon_pid is not None:
+        return {
+            "error": f"busy: daemon owns inbox (PID {daemon_pid})",
+            "_hint": (
+                "Daemon polluje inbox svake 2s i auto-odgovara na asks. "
+                "Ako ti TREBA da rucno drainas inbox, ugasi daemon prvo "
+                "(./stop-<peer>.sh). U normalnom radu, daemon vec pokriva sve."
+            ),
+        }
+
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"{cfg.relay_url}/inbox/{cfg.my_id}",
