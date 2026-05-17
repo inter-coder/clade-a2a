@@ -140,13 +140,22 @@ fallback je transparentan.
 - [ ] CLAUDE.md template za njegov agent (sa scope-om: read-only DB, roadmap dokument)
 - [ ] End-to-end test: Frontend-Claude pita Katana-Claude "koliko ABA igraca u staging-u" → odgovor
 
-### Faza 4 — Productionizacija (1 dan)
+### Faza 4 — Productionizacija ✓ (2026-05-17)
 
-- [ ] Reconnect sa eksponencijalnim backoff-om
-- [ ] Outbox buffer (agent persistira outgoing poruke ako je relay down)
-- [ ] Geo-anomaly detekcija (alert ako token koristi nova IP)
-- [ ] Web UI za audit log (basic — lista poruka, filtriraj po peer-u)
-- [ ] Smoke test suite
+- [x] Outbox buffer + exponencijalni backoff (`agent/outbox.py`)
+  - Send/reply koji fail-uju (5xx, network) → SQLite outbox umesto gubitka
+  - Backoff schedule: 1/2/4/8/16/30s, max 6 attempts → dead-letter
+  - Lazy flush: svaki tool poziv pokusa da flush-uje pending poruke
+  - `clade_outbox_status` MCP tool za debug
+- [x] Pytest smoke suite (`tests/`)
+  - 11 tests, spawn-uju sopstvenu relay instancu na slobodnom portu
+  - Coverage: security (auth, replay, sender spoof, cross-inbox isolation),
+    E2E (send/inbox, ask/reply, HMAC tamper detection, outbox queueing)
+  - `./scripts/test.sh` ili `.venv/bin/python -m pytest tests/`
+
+Odlozeno za Faza 5:
+- [ ] Web UI za audit log (basic HTML form + table)
+- [ ] Geo-anomaly detekcija (alert ako token koristi novu IP)
 
 ### Faza 5 — Reuse za drugi projekat
 

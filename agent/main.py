@@ -1,14 +1,18 @@
-"""Clade Agent — Faza 1.
+"""Clade Agent — Faza 4.
 
-Stdio MCP server. Dodato u odnosu na Fazu 0:
-- Bearer token u Authorization header-u prema relay-u
-- HMAC-SHA256 E2E sa per-pair shared secret-om (relay ne moze da forge-uje)
-- Nonce + timestamp u svakoj poruci (anti-replay)
-- Verifikacija HMAC-a + odbacivanje bad-hmac / unknown-peer poruka na inbox-u
-- Lokalni SQLite audit log (sve poslate + primljene + odbacene poruke)
-- Reply preko clade_reply takodje potpisuje HMAC
+Stdio MCP server sa svim layer-ima iz Faza 0-2:
+- Bearer token + HMAC E2E + nonce/timestamp (Faza 1)
+- SQLite audit log (Faza 1)
+- Outbox buffer sa exponencijalnim backoff-om (Faza 4 — ovaj fajl)
+- Auto-flush outbox-a na svaki tool poziv (lazy retry)
 
-Config: $CLADE_CONFIG env var ili ./config.yaml.
+Outbox semantika: ako relay vrati non-2xx ili veza padne tokom clade_send
+ili clade_reply, poruka se persistuje u SQLite outbox umesto da se gubi.
+Sledeci put kad bilo koji tool bude pozvan, prvo se pokusava flush
+outbox-a. Backoff: 1/2/4/8/16/30s, max 6 attempts → dead-letter.
+
+clade_ask je sinhroni — ne ide kroz outbox (korisnik svejedno mora da
+retry-uje ako nije dobio odgovor).
 """
 
 import hashlib
@@ -27,6 +31,8 @@ import httpx
 import yaml
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
+
+from agent import outbox
 
 
 # ---- Config ----
@@ -73,10 +79,50 @@ def _init_audit_db() -> sqlite3.Connection:
         )
     """)
     conn.commit()
+    # Inicijalizuj outbox tabelu (deli istu DB)
+    outbox.init_outbox(conn)
     return conn
 
 
 _audit_conn = _init_audit_db()
+
+
+# ---- Outbox flush (lazy: poziva se na svaki tool poziv) ----
+
+async def _flush_outbox() -> dict[str, int]:
+    """Pokusa da posalje sve pending outbox poruke. Vraca {sent, failed, dead}.
+    Bezbedno za pozivanje na svakom tool poziv-u — vrlo brzo ako nema pending-a."""
+    rows = outbox.pending_rows(_audit_conn, max_items=10)
+    if not rows:
+        return {"sent": 0, "failed": 0, "dead": 0}
+
+    sent = failed = dead = 0
+    async with httpx.AsyncClient(timeout=10) as client:
+        for row in rows:
+            try:
+                r = await client.post(
+                    f"{cfg.relay_url}{row['endpoint']}",
+                    json=row["envelope"] if row["endpoint"] != "/ask" else {"env": row["envelope"]},
+                    headers=_auth_headers(),
+                )
+                if r.status_code == 200:
+                    outbox.mark_delivered(_audit_conn, row["id"])
+                    audit_log("out", row["envelope"].get("msg_id"), row["to_agent"], row["kind"], "outbox_flushed", f"after {row['attempts']} attempts")
+                    sent += 1
+                else:
+                    still_alive = outbox.mark_failed(_audit_conn, row["id"], f"HTTP {r.status_code}: {r.text[:100]}")
+                    if still_alive:
+                        failed += 1
+                    else:
+                        dead += 1
+                        audit_log("rejected", row["envelope"].get("msg_id"), row["to_agent"], row["kind"], "outbox_dead", f"after {row['attempts']+1} attempts")
+            except Exception as e:
+                still_alive = outbox.mark_failed(_audit_conn, row["id"], str(e)[:100])
+                if still_alive:
+                    failed += 1
+                else:
+                    dead += 1
+    return {"sent": sent, "failed": failed, "dead": dead}
 
 
 def audit_log(direction: str, msg_id: str | None, peer: str | None, kind: str | None, status: str, note: str = "") -> None:
@@ -161,26 +207,50 @@ mcp = FastMCP(f"clade-agent-{cfg.my_id}")
 async def clade_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Posalji peer-u fire-and-forget poruku (HMAC-potpisanu).
 
+    Ako relay vrati gresku ili je nedostupan, poruka ide u SQLite outbox
+    i retry-uje sa exponencijalnim backoff-om na sledecim tool pozivima.
+
     Args:
         to: ID peer agenta (npr. "bob")
         payload: dict sa proizvoljnim sadrzajem
 
     Returns:
-        {"ok": True, "msg_id": "..."} ili {"error": "..."}
+        {"ok": True, "msg_id": "..."} ako je odmah dostavljena
+        {"ok": True, "msg_id": "...", "queued": True} ako je u outbox-u
+        {"error": "..."} ako je validation problem (peer nije u allowlist-u itd.)
     """
+    # Lazy flush — prvo pokusaj da prosles pending poruke
+    flushed = await _flush_outbox()
+
     err = _check_peer(to)
     if err:
         audit_log("rejected", None, to, "send", "unknown_peer", err)
         return {"error": err}
 
     env = _make_envelope("send", to, payload)
-    async with httpx.AsyncClient() as client:
-        r = await client.post(f"{cfg.relay_url}/send", json=env, headers=_auth_headers(), timeout=10)
-    if r.status_code != 200:
-        audit_log("out", env["msg_id"], to, "send", f"http_{r.status_code}", r.text[:200])
-        return {"error": f"Relay returned {r.status_code}: {r.text}"}
-    audit_log("out", env["msg_id"], to, "send", "delivered")
-    return r.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(f"{cfg.relay_url}/send", json=env, headers=_auth_headers(), timeout=10)
+        if r.status_code == 200:
+            audit_log("out", env["msg_id"], to, "send", "delivered")
+            result = r.json()
+            if flushed["sent"] + flushed["failed"] + flushed["dead"] > 0:
+                result["outbox_flush"] = flushed
+            return result
+        elif r.status_code >= 500 or r.status_code == 429:
+            # 5xx ili rate-limit: enqueue za retry
+            row_id = outbox.enqueue(_audit_conn, "send", to, "/send", env, f"HTTP {r.status_code}: {r.text[:100]}")
+            audit_log("out", env["msg_id"], to, "send", "queued", f"outbox row {row_id}")
+            return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id}
+        else:
+            # 4xx — permanent error (npr. bad signature, validation): NE enqueue
+            audit_log("out", env["msg_id"], to, "send", f"http_{r.status_code}", r.text[:200])
+            return {"error": f"Relay returned {r.status_code}: {r.text}"}
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        # Network error: enqueue
+        row_id = outbox.enqueue(_audit_conn, "send", to, "/send", env, str(e)[:100])
+        audit_log("out", env["msg_id"], to, "send", "queued_net", f"outbox row {row_id}: {type(e).__name__}")
+        return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id, "note": "relay unreachable, queued for retry"}
 
 
 @mcp.tool()
@@ -307,30 +377,62 @@ async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
 async def clade_reply(correlation_id: str, response: dict[str, Any], to: str) -> dict[str, Any]:
     """Odgovori na pending ask (videno u inbox-u sa kind='ask').
 
+    Ima isti outbox semantika kao clade_send.
+
     Args:
         correlation_id: iz polja correlation_id originalne ask poruke
         response: dict sa odgovorom (npr. {"answer": "56"})
-        to: ID original-sender-a (from_agent originalne ask poruke). Trebamo to da bismo
-            HMAC-potpisali sa pravim shared secret-om.
+        to: ID original-sender-a (from_agent originalne ask poruke).
 
     Returns:
-        {"ok": True} ili {"error": "..."}
+        {"ok": True} ili {"ok": True, "queued": True} ili {"error": "..."}
     """
+    flushed = await _flush_outbox()
+
     err = _check_peer(to)
     if err:
         audit_log("rejected", None, to, "reply", "unknown_peer", err)
         return {"error": err}
 
-    # Reply envelope — kind je tehnicki "reply", ali HMAC ukljucuje correlation_id
     env = _make_envelope("reply", to, response, correlation_id=correlation_id)
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(f"{cfg.relay_url}/reply", json=env, headers=_auth_headers(), timeout=10)
-    if r.status_code != 200:
-        audit_log("out", env["msg_id"], to, "reply", f"http_{r.status_code}", r.text[:200])
-        return {"error": f"Relay returned {r.status_code}: {r.text}"}
-    audit_log("out", env["msg_id"], to, "reply", "delivered", f"corr={correlation_id}")
-    return r.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(f"{cfg.relay_url}/reply", json=env, headers=_auth_headers(), timeout=10)
+        if r.status_code == 200:
+            audit_log("out", env["msg_id"], to, "reply", "delivered", f"corr={correlation_id}")
+            result = r.json()
+            if flushed["sent"] + flushed["failed"] + flushed["dead"] > 0:
+                result["outbox_flush"] = flushed
+            return result
+        elif r.status_code >= 500 or r.status_code == 429:
+            row_id = outbox.enqueue(_audit_conn, "reply", to, "/reply", env, f"HTTP {r.status_code}: {r.text[:100]}")
+            audit_log("out", env["msg_id"], to, "reply", "queued", f"outbox row {row_id}")
+            return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id}
+        else:
+            # 4xx — permanent error (npr. "No pending ask"): NE enqueue
+            audit_log("out", env["msg_id"], to, "reply", f"http_{r.status_code}", r.text[:200])
+            return {"error": f"Relay returned {r.status_code}: {r.text}"}
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        row_id = outbox.enqueue(_audit_conn, "reply", to, "/reply", env, str(e)[:100])
+        audit_log("out", env["msg_id"], to, "reply", "queued_net", f"outbox row {row_id}: {type(e).__name__}")
+        return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id, "note": "relay unreachable, queued"}
+
+
+@mcp.tool()
+async def clade_outbox_status() -> dict[str, Any]:
+    """Vraca stanje outbox-a: koliko poruka ceka retry, koliko ih je dostavljeno,
+    koliko ih je dead-letter-ovano. Korisno za debug kad agent JAVI da je
+    poruka 'queued' a korisnik hoce da vidi da li je u medjuvremenu prosla.
+
+    Uz to, forsira flush.
+    """
+    flushed = await _flush_outbox()
+    stats_now = outbox.stats(_audit_conn)
+    return {
+        "stats": stats_now,
+        "just_flushed": flushed,
+    }
 
 
 if __name__ == "__main__":
