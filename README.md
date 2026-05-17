@@ -103,14 +103,25 @@ tampered HMAC → relay accept ALI receiver odbacuje, happy path → 200.
 Odlozeno za Faza 1.5: Redis stream na relay-u (i dalje in-memory),
 token rotation CLI (manual rotacija OK za 2-3 peer-a).
 
-### Faza 2 — Deployment (1 dan)
+### Faza 2 — Deployment ✓ (artefakti, 2026-05-17)
 
-- [ ] Redis u relay docker compose (persistence + dedup)
-- [ ] Caddy + Let's Encrypt za TLS (subdomain `clade.symappsys.com`)
-- [ ] systemd unit za agent (auto-restart on crash)
-- [ ] VPS provisioning (Hetzner CPX11 Frankfurt, €4.51/mesec)
-- [ ] Health check endpoint
-- [ ] Dokumentovan deploy proces
+- [x] Redis u relay docker compose (`relay/store.py` + `RedisStore`,
+  graceful fallback na InMemory ako REDIS_URL nije setovan)
+- [x] Caddy + Let's Encrypt konfiguracija (`deploy/Caddyfile`)
+- [x] systemd unit template za agent (`deploy/systemd/clade-agent.service`)
+- [x] Dockerfile (multi-stage, healthcheck, slim image)
+- [x] docker-compose stack (relay + redis + caddy, secrets kao volume mount)
+- [x] /health endpoint vraca store backend + redis_ok flag
+- [x] `deploy/DEPLOY.md` — 7 koraka VPS deploy (provisioning, DNS, Docker,
+  Caddyfile edit, tokens.json setup, smoke test, agent setup)
+
+PENDING (korisnik radi):
+- [ ] Hetzner CPX11 Frankfurt provisioning (€4.51/mesec)
+- [ ] Cloudflare DNS A record (gray cloud / DNS only)
+- [ ] Stvarni deploy + smoke test sa pravim TLS-om
+
+Lokalni dev (in-memory) i dalje radi nepromenjeno — REDIS_URL nije setovan,
+fallback je transparentan.
 
 ### Faza 3 — Prvi pravi peer (Katana server) (0.5 dan)
 

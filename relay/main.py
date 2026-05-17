@@ -1,27 +1,27 @@
-"""Clade Relay — Faza 1.
+"""Clade Relay — Faza 2.
 
-In-memory message broker sa:
-- Bearer token authentication (tokens.json mapuje token → agent_id)
-- Nonce dedup (5min window) — anti-replay
-- Timestamp window check (5min skew) — anti-replay
-- NE validira HMAC (nije sopstveni problem — relay je dumb dispatcher,
-  HMAC validacija je E2E na agent strani sa per-pair shared secret-om
-  koji relay ne zna)
+Message broker sa:
+- Bearer token authentication (tokens.json mapuje token → agent_id) [Faza 1]
+- Nonce dedup + timestamp window — anti-replay [Faza 1]
+- E2E HMAC ne validira (peer secret nije njegova briga) [Faza 1]
+- Pluggable storage backend: in-memory (dev) ili Redis (prod) [Faza 2]
+- Production deploy preko Docker + Caddy + Let's Encrypt [Faza 2]
 
-Production-grade dodaci (Faza 2+): Redis persistence, TLS preko Caddy,
-rate limiting, geo-anomaly detekcija.
+Production-grade dodaci za Faza 3+: rate limiting po token-u,
+geo-anomaly detekcija, web UI za audit.
 """
 
 import asyncio
 import json
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+
+from relay.store import Store, make_store
 
 
 # ---- Config ----
@@ -35,19 +35,18 @@ AUDIT_MAX = 10_000
 
 # ---- State ----
 
-# inbox[agent_id] = [envelope, ...]
-inbox: dict[str, list[dict[str, Any]]] = defaultdict(list)
+# Storage backend (in-memory ili Redis) — inicijalizovan u lifespan-u
+store: Store | None = None
 
 # pending_asks[correlation_id] = asyncio.Future
+# NAMERA: ovo OSTAJE u memoriji. asyncio.Future nije serijabilan, a ako
+# relay restartuje, sve in-flight asks fail-uju (klijent retry-uje).
 pending_asks: dict[str, asyncio.Future] = {}
 
-# tokens[token_str] = agent_id
+# tokens[token_str] = agent_id — ucitano sa diska, immutable
 tokens: dict[str, str] = {}
 
-# nonces[nonce] = expire_unix_s
-nonces: dict[str, float] = {}
-
-# audit ring buffer
+# audit ring buffer — u memoriji za sad, Redis stream u Faza 3
 audit: list[dict[str, Any]] = []
 
 
@@ -102,27 +101,13 @@ async def authenticate(authorization: Annotated[str | None, Header()] = None) ->
 
 # ---- Anti-replay ----
 
-def check_nonce(nonce: str) -> bool:
-    """Vrati True ako je nonce nov i zabelezen; False ako je vec videno."""
-    now = time.time()
-    # Cleanup expired
-    if len(nonces) > 10_000:
-        expired = [n for n, exp in nonces.items() if exp < now]
-        for n in expired:
-            nonces.pop(n, None)
-    if nonce in nonces:
-        return False
-    nonces[nonce] = now + NONCE_TTL_S
-    return True
-
-
 def check_timestamp(ts_ms: int) -> bool:
     """Vrati True ako je timestamp u prozoru (max TS_SKEW_MS skju)."""
     now_ms = int(time.time() * 1000)
     return abs(now_ms - ts_ms) <= TS_SKEW_MS
 
 
-def validate_envelope(env_dict: dict, sender: str) -> str | None:
+async def validate_envelope(env_dict: dict, sender: str) -> str | None:
     """Brze provere koje relay moze da uradi (sender, nonce, timestamp).
     NE proverava HMAC — to je E2E na agent strani.
 
@@ -131,7 +116,8 @@ def validate_envelope(env_dict: dict, sender: str) -> str | None:
         return f"from_agent ('{env_dict['from_agent']}') ne odgovara autentikovanom sender-u ('{sender}')"
     if not check_timestamp(env_dict["timestamp_ms"]):
         return f"Timestamp izvan prozora od {TS_SKEW_MS}ms"
-    if not check_nonce(env_dict["nonce"]):
+    assert store is not None
+    if not await store.check_nonce(env_dict["nonce"], NONCE_TTL_S):
         return "Replay detected: nonce vec videno"
     return None
 
@@ -164,28 +150,31 @@ def load_tokens() -> dict[str, str]:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global store
     tokens.update(load_tokens())
-    print(f"[relay] startup — loaded {len(tokens)} tokens, listening on http://localhost:7777")
+    store = await make_store()
+    print(f"[relay] startup — loaded {len(tokens)} tokens, store={type(store).__name__}")
     print(f"[relay] known agents: {sorted(set(tokens.values()))}")
     yield
     print("[relay] shutdown")
 
 
-app = FastAPI(title="Clade Relay (Faza 1)", lifespan=lifespan)
+app = FastAPI(title="Clade Relay (Faza 2)", lifespan=lifespan)
 
 
 # ---- Endpoints ----
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    assert store is not None
+    store_health = await store.health()
     return {
         "ok": True,
-        "phase": 1,
+        "phase": 2,
         "known_agents": sorted(set(tokens.values())),
-        "inbox_sizes": {k: len(v) for k, v in inbox.items() if v},
         "pending_asks": len(pending_asks),
         "audit_count": len(audit),
-        "nonce_cache_size": len(nonces),
+        "store": store_health,
     }
 
 
@@ -193,15 +182,15 @@ async def health() -> dict[str, Any]:
 async def send(env: Envelope, sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
     """Fire-and-forget. Bearer + nonce + timestamp validacija."""
     env_dict = env.model_dump()
-    err = validate_envelope(env_dict, sender)
+    err = await validate_envelope(env_dict, sender)
     if err:
         log(env_dict, f"rejected:{err[:30]}")
         raise HTTPException(400, err)
 
-    if len(inbox[env.to_agent]) >= INBOX_MAX:
+    assert store is not None
+    ok = await store.inbox_push(env.to_agent, env_dict, INBOX_MAX)
+    if not ok:
         raise HTTPException(503, f"Inbox for {env.to_agent} full ({INBOX_MAX} items)")
-
-    inbox[env.to_agent].append(env_dict)
     log(env_dict, "delivered")
     return {"ok": True, "msg_id": env.msg_id}
 
@@ -213,7 +202,7 @@ async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> d
     if not body.env.correlation_id:
         raise HTTPException(400, "correlation_id required for ask")
 
-    err = validate_envelope(env_dict, sender)
+    err = await validate_envelope(env_dict, sender)
     if err:
         log(env_dict, f"rejected:{err[:30]}")
         raise HTTPException(400, err)
@@ -221,7 +210,11 @@ async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> d
     fut: asyncio.Future = asyncio.get_event_loop().create_future()
     pending_asks[body.env.correlation_id] = fut
 
-    inbox[body.env.to_agent].append(env_dict)
+    assert store is not None
+    ok = await store.inbox_push(body.env.to_agent, env_dict, INBOX_MAX)
+    if not ok:
+        pending_asks.pop(body.env.correlation_id, None)
+        raise HTTPException(503, f"Inbox for {body.env.to_agent} full")
     log(env_dict, "asked")
 
     try:
@@ -238,12 +231,9 @@ async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> d
 @app.post("/reply")
 async def reply(reply_env: ReplyEnvelope, sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
     """Reply na pending ask. Mora biti HMAC-potpisana (validacija E2E na original-sender strani
-    kad procita inbox), ali relay forward-uje payload + HMAC zajedno.
-
-    Faza 1 simplifikacija: reply payload se vraca preko Future-a kao raw dict;
-    HMAC inner-payload validacija u Faza 1.5 (sad relay samo proverava nonce + timestamp + sender)."""
+    kad procita inbox), ali relay forward-uje payload + HMAC zajedno."""
     env_dict = reply_env.model_dump()
-    err = validate_envelope(env_dict, sender)
+    err = await validate_envelope(env_dict, sender)
     if err:
         log(env_dict, f"rejected:{err[:30]}")
         raise HTTPException(400, err)
@@ -254,7 +244,6 @@ async def reply(reply_env: ReplyEnvelope, sender: Annotated[str, Depends(authent
     if fut.done():
         raise HTTPException(409, "Ask already resolved")
 
-    # Sklopi reply envelope kao response za alice (sa HMAC-om koji alice moze da validira)
     fut.set_result(env_dict)
     log(env_dict, "reply_delivered")
     return {"ok": True}
@@ -266,8 +255,8 @@ async def get_inbox(agent_id: str, sender: Annotated[str, Depends(authenticate)]
     if agent_id != sender:
         raise HTTPException(403, f"Cannot read inbox of '{agent_id}' as '{sender}'")
 
-    items = inbox[agent_id][:max_items]
-    del inbox[agent_id][:max_items]
+    assert store is not None
+    items = await store.inbox_drain(agent_id, max_items)
     if items:
         log({"from_agent": "-", "to_agent": agent_id, "kind": "inbox"}, f"drained_{len(items)}")
     return {"messages": items, "count": len(items)}

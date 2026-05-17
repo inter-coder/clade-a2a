@@ -1,0 +1,54 @@
+# Clade Relay — production stack
+# Deploy: cd ~/clade && docker compose up -d
+# Logs:   docker compose logs -f relay
+# Stop:   docker compose down
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      # tokens.json se mount-uje sa hosta — NE u image (secret!)
+      - ./tokens.json:/app/relay/tokens.json:ro
+    expose:
+      - "7777"
+    # Direktno port-binding NIJE potreban — Caddy je u istoj mrezi
+    # i hvata sav saobracaj sa interneta
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay
+
+volumes:
+  redis-data:
+  caddy-data:
+  caddy-config:

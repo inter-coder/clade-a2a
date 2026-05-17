@@ -1,0 +1,34 @@
+# Clade Relay — Caddy konfiguracija
+# Automatski TLS preko Let's Encrypt. DNS mora prvo da pokazuje na ovaj host.
+# Ako menjas domain, zameni `clade.symappsys.com` na svom mestu.
+
+clade.symappsys.com {
+    # Reverse proxy ka relay-u u istoj Docker mrezi
+    reverse_proxy relay:7777
+
+    # Security headers
+    header {
+        # HSTS: 1 god, includeSubDomains, preload-eligible
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Browser ne kesira sigurnosno-osetljive responses
+        Cache-Control "no-store"
+        # Skini server fingerprint
+        -Server
+    }
+
+    # Logovanje request-a (osim health-a, da ne zatrpa)
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+
+    # Health check ne treba auth (Caddy ga ne stiti pre Bearer-a — pojedinacni
+    # endpoint na FastAPI strani je javan kao i u Fazi 1)
+}
+
+# Optional: redirect HTTP na HTTPS — Caddy ovo radi automatski za bilo
+# koji host iznad, ali eksplicitno za default 80 port:
+:80 {
+    redir https://clade.symappsys.com{uri} permanent
+}

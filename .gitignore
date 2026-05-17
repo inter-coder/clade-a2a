@@ -10,3 +10,8 @@ __pycache__/
 *.log
 # Per-machine audit logs (created at runtime per cfg.audit_db path)
 clade-*-audit.db
+# Production tokens.json — NIKAD ne commitovati (secret)
+deploy/tokens.json
+# NAPOMENA: relay/tokens.json je DEV tokens committed za POC convenience —
+# ovo su localhost-only test keys. Production deploy generise sveze ./scripts/gen-keys.sh
+# i smesta u deploy/tokens.json (van git-a).

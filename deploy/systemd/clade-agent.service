@@ -1,0 +1,49 @@
+# Clade Agent — systemd unit za peer masinama
+# Install:
+#   sudo cp deploy/systemd/clade-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now clade-agent
+# Logs:
+#   journalctl -u clade-agent -f
+#
+# NAPOMENA: ovaj unit pokrece agent kao STANDALONE process (ne stdio MCP).
+# Standalone moze da koristi REST API agenta (kad ga dodamo u Fazi 3+) ili
+# samo da long-polluje inbox i loguje. Trenutno (Faza 2) agent je strikt
+# stdio MCP koji Claude Code spawn-uje sam kao child process —
+# OVAJ UNIT JE ZA BUDUCNOST kada agent dobije standalone mode.
+
+[Unit]
+Description=Clade A2A Agent (long-polling daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clade
+Group=clade
+WorkingDirectory=/opt/clade
+Environment="CLADE_CONFIG=/etc/clade/config.yaml"
+# Bearer token + HMAC secrets se citaju iz config-a, ne iz env-a
+# (pristup je restriktovan kroz fajl permissions: 0600 root:root)
+
+ExecStart=/opt/clade/.venv/bin/python /opt/clade/agent/main.py --standalone
+
+# Auto-restart na crash, max 5 puta u 60s pre nego sto se preda
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=256M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/clade
+
+[Install]
+WantedBy=multi-user.target
