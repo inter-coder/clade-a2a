@@ -306,7 +306,11 @@ PIDFILE="\$HERE/daemon.pid"
 echo \$\$ > "\$PIDFILE"
 trap "rm -f \$PIDFILE" EXIT
 
+# Pokreni daemon — clade-a2a moze biti u nekom path-u, mi smo trenutno u
+# bundle dir-u (zbog config-a + audit DB relativnih path-ova). Da `python -m
+# agent.daemon` nadje module, dodajemo $TARGET_PATH u PYTHONPATH.
 export CLADE_CONFIG="\$HERE/$peer.yaml"
+export PYTHONPATH="$TARGET_PATH:\${PYTHONPATH:-}"
 exec "$TARGET_PYTHON" -m agent.daemon "\$@"
 EOF
   chmod +x "$AGENT_DIR/start.sh"

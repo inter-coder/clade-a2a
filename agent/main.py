@@ -32,7 +32,12 @@ import yaml
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from agent import outbox
+# Kada se main.py pokrene direktno (`python agent/main.py`), Python stavlja
+# samo agent/ na sys.path, pa `from agent import ...` ne radi. Dodajemo
+# parent dir da i `python agent/main.py` i `python -m agent.main` rade.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent import outbox  # noqa: E402
 
 
 # ---- Config ----

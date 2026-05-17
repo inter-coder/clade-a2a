@@ -13,6 +13,7 @@ Stop: Ctrl+C (SIGINT) ili `kill <pid>` (SIGTERM). Cisto se isključuje.
 
 import argparse
 import asyncio
+import os
 import secrets
 import signal
 import sys
@@ -21,7 +22,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import httpx
+# Kao i u agent/main.py — kad se daemon pokrene preko `python -m agent.daemon`
+# iz tudjeg dir-a (npr. iz agent bundle-a), `from agent.main import ...` moze
+# da pukne jer parent dir nije na sys.path. Dodajemo eksplicitno.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import httpx  # noqa: E402
 
 # Boja za stdout (visuelno cisto)
 RESET = "\033[0m"
