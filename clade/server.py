@@ -230,7 +230,12 @@ class Server:
 
     async def _serve_http(self) -> None:
         """Pokrene uvicorn na 127.0.0.1:http_port sa MCP + /health rutama.
-        Blokira do should_exit=True (postavljeno u stop())."""
+        Blokira do should_exit=True (postavljeno u stop()).
+
+        NAPOMENA: uvicorn po default-u postavi sopstvene signal handler-e za
+        SIGTERM/SIGINT koji bi pojeli nase (vidi `main._handle_signal`).
+        Eksplicitno ih iskljucujemo da nas `Server.stop()` — koji brise unix
+        socket + WAL checkpoint + outbox cleanup — bude pozvan na shutdown."""
         from clade.mcp_server import build_mcp_app  # noqa: PLC0415
 
         app = build_mcp_app(self)
@@ -240,6 +245,7 @@ class Server:
             log_level="warning", access_log=False, lifespan="on",
         )
         self.uvicorn_server = uvicorn.Server(config)
+        self.uvicorn_server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
         await self.uvicorn_server.serve()
 
     # ---- Transport dispatch (za outbox retry) ----
