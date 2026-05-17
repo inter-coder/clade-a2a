@@ -32,6 +32,11 @@ uv venv && uv pip install -e .
 # Lokalni multi-peer wizard / multi-machine deploy
 ./scripts/clade-wizard.sh    # 3 terminala na jednoj masini
 ./scripts/clade-deploy.sh    # generise scp bundle-ove za vise masina
+
+# Ako start-<peer>-daemon.sh pukne sa "drugi daemon vec tece":
+./scripts/clade-cleanup.sh   # nadje + ugasi daemon procese, lock + stale PID fajlove
+./scripts/clade-cleanup.sh --dry-run     # samo prikazi sta bi se ugasilo
+./scripts/clade-cleanup.sh --include-relay   # ugasi i relay
 ```
 
 Nema linter / type-checker konfiguracije. Pre commit-a samo `./scripts/test.sh`.
