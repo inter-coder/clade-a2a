@@ -21,6 +21,37 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Trenutna verzija protokola. Strict major match handshake po §2.10:
+# - v2.x.y prihvata bilo koji v2.*.* envelope (loose minor/patch)
+# - v1.x.y i v3.x.y odbija
+PROTOCOL_VERSION = "2.0.0"
+PROTOCOL_MAJOR = 2
+
+
+def parse_major(version: str) -> int | None:
+    """Vrati major component verzije ('2.1.5' → 2). None ako parse fail."""
+    parts = version.split(".")
+    if not parts or not parts[0].isdigit():
+        return None
+    try:
+        return int(parts[0])
+    except ValueError:
+        return None
+
+
+def check_protocol_compat(received: str) -> tuple[bool, str | None]:
+    """Vrati (ok, error_msg). ok=True znaci kompatibilan major.
+    error_msg ima `expected/received` format pogodan za 426 odgovor."""
+    received_major = parse_major(received)
+    if received_major is None:
+        return False, f"invalid protocol_version format: '{received}'"
+    if received_major != PROTOCOL_MAJOR:
+        return False, (
+            f"protocol_mismatch: this clade expects v{PROTOCOL_MAJOR}.x.y, "
+            f"received '{received}'. Upgrade peer to clade>=2.0."
+        )
+    return True, None
+
 
 class Envelope(BaseModel):
     """Poruka koja putuje kroz Transport sloj. Immutable po konvenciji

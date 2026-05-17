@@ -35,7 +35,9 @@ import uvicorn
 
 from clade import __version__
 from clade.audit import Audit
-from clade.envelope import Envelope
+from clade.envelope import (
+    Envelope, PROTOCOL_MAJOR, PROTOCOL_VERSION, check_protocol_compat,
+)
 from clade.outbox import Outbox, outbox_retry_loop
 from clade.peers_config import PeerEntry, PeersConfig
 from clade.thread_cache import ThreadCache, ThreadMsg
@@ -156,7 +158,28 @@ class Server:
         """Handler za UnixSocketTransport — poziva se za svaku inbound poruku
         od drugog peer-a. PR#2 minimum: validate, audit-record, thread-cache update.
         Za 'ask' poruke, jos uvek vracamo placeholder reply (jer MCP-spawn-Claude
-        integracija dolazi kasnije)."""
+        integracija dolazi kasnije).
+
+        Protocol version handshake (§2.10, v2.0): odbija envelope sa major
+        mismatch-om PRE peer validation-a — clean wire-level check."""
+        # Protocol version check (v2.0 handshake)
+        ok, err = check_protocol_compat(env.protocol_version)
+        if not ok:
+            LOG.warning("protocol mismatch from %s: %s", env.from_agent, err)
+            assert self.audit is not None
+            self.audit.record(env, direction="in", status="rejected", error=err)
+            err_env = Envelope.new(
+                from_agent=self.me_id, to_agent=env.from_agent, kind="reply",
+                payload={
+                    "_error": "protocol_mismatch",
+                    "expected": f"{PROTOCOL_MAJOR}.x.y",
+                    "received": env.protocol_version,
+                    "hint": f"Upgrade peer to clade>={PROTOCOL_MAJOR}.0",
+                },
+                correlation_id=env.correlation_id,
+            )
+            return Response(envelope=err_env)
+
         # Validacija peer-a
         if env.from_agent not in self.cfg.peers:
             LOG.warning("unknown peer '%s' — rejecting", env.from_agent)
@@ -333,6 +356,34 @@ def main() -> int:
     init_p.add_argument("--config", default=None,
                         help="Override default ~/.config/clade/peers.yaml path-a")
 
+    # status
+    status_p = sub.add_parser("status", help="Pingaj /health i prikazi citljivo")
+    status_p.add_argument("--peer", default=None,
+                          help="Override 'self' (citaj health drugog peer-a na istoj masini)")
+    status_p.add_argument("--config", default="~/.config/clade/peers.yaml")
+
+    # logs
+    logs_p = sub.add_parser("logs", help="Tail audit DB (opciono + journalctl)")
+    logs_p.add_argument("--peer", default=None, help="Override 'self'")
+    logs_p.add_argument("--peer-filter", default=None, dest="peer_filter",
+                        help="Filter audit po peer kolone (suzava log na razmenu sa jednim peer-om)")
+    logs_p.add_argument("--tail", type=int, default=20,
+                        help="Broj zapisa za prikazati (default 20)")
+    logs_p.add_argument("--journal", action="store_true",
+                        help="I prikazi journalctl --user -u clade-<peer> output")
+    logs_p.add_argument("--config", default="~/.config/clade/peers.yaml")
+
+    # send
+    send_p = sub.add_parser("send", help="One-shot poruka peer-u (debug)")
+    send_p.add_argument("--to", required=True, help="Target peer ID")
+    send_p.add_argument("message", help="Sadrzaj poruke (string)")
+    send_p.add_argument("--expect-reply", action="store_true", dest="expect_reply",
+                        help="Sinhroni ask — blokira do reply ili timeout")
+    send_p.add_argument("--timeout", type=int, default=90,
+                        help="timeout_s za --expect-reply (default 90)")
+    send_p.add_argument("--thread", default=None, help="thread_id (opciono)")
+    send_p.add_argument("--config", default="~/.config/clade/peers.yaml")
+
     args = parser.parse_args()
 
     if args.cmd == "serve":
@@ -356,6 +407,18 @@ def main() -> int:
         from clade.init import cli_init  # noqa: PLC0415
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
         return cli_init(args)
+
+    if args.cmd == "status":
+        from clade.cli import cli_status  # noqa: PLC0415
+        return cli_status(args)
+
+    if args.cmd == "logs":
+        from clade.cli import cli_logs  # noqa: PLC0415
+        return cli_logs(args)
+
+    if args.cmd == "send":
+        from clade.cli import cli_send  # noqa: PLC0415
+        return cli_send(args)
 
     return 0
 
