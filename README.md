@@ -45,25 +45,96 @@ Sve komande tada idu kroz `.venv/bin/clade-*` ili `.venv/bin/python -m relay.mai
 
 ---
 
-## Quick start — najlakši put (wizard)
+## Setup — 3 scenarija
+
+### A) Multi-machine (3+ razlicite masine) — `clade-deploy.sh`
+
+Najcesci pravi use case: 1 server + 2+ agent masina u LAN/VPN-u.
+
+**Na bilo kojoj masini (generator):**
+
+```bash
+./scripts/clade-deploy.sh
+# Pita: ime projekta, IP relay masine, broj peer-ova + imena, target path
+```
+
+Output: `~/clade-projects/<name>/` sa 3 bundle-a:
+- `server-bundle/` → scp na relay masinu
+- `agent-<peer1>-bundle/` → scp na peer1 masinu
+- `agent-<peer2>-bundle/` → scp na peer2 masinu
+
+**Na svakoj target masini:**
+
+```bash
+# Jednom — install clade-a2a:
+sudo mkdir -p /opt/clade-a2a && sudo chown $USER /opt/clade-a2a
+git clone https://github.com/inter-coder/clade-a2a.git /opt/clade-a2a
+cd /opt/clade-a2a && ~/.local/bin/uv venv && ~/.local/bin/uv pip install -e .
+
+# Zatim — scp bundle pa pokreni:
+cd ~/clade-server   # ili ~/clade-agent
+./start.sh
+```
+
+To je sve. **Server bundle** pokrece relay. **Agent bundle** pokrece Claude Code (sa pravim `.mcp.json` koji se generise runtime-om). Detalje vidi `~/clade-projects/<name>/INSTRUCTIONS.txt` posle deploy-a.
+
+### B) Single-machine (3 terminala, lokalno) — `clade-wizard.sh`
+
+Za lokalni test/dev kad ti je sve na jednoj masini:
 
 ```bash
 ./scripts/clade-wizard.sh
+# Pita: ime, peer-ovi, relay host/port (default localhost)
+# Pokrene relay u pozadini, generise start-<peer>.sh skripte
 ```
 
-Wizard te pita za:
-- Ime projekta (default: `my-clade-<datum>`)
-- Lokaciju (default: `~/clade-projects/<ime>`)
-- Broj peer-ova + ime svakog (default: 2, default imena: `frontend`/`katana` itd.)
-- Relay host/port (default: `127.0.0.1:7777`)
+Posle wizard-a otvoris N terminala i u svakom pokrenes `start-<peer>.sh`.
 
-Pa onda automatski:
-1. Generise sve config-e + kljuceve
-2. Pokrece relay u pozadini (sa health check-om)
-3. Pravi `start-<peer>.sh` skriptu za svakog peer-a
-4. Pravi `status.sh`, `stop.sh`, `start-relay.sh` helpere
+### C) Manual (potpuna kontrola) — `clade-init` CLI
 
-Posle wizard-a, samo otvoris N terminala i pokrenes `start-<peer>.sh` u svakom. Cela komplikacija sa `mkdir/cp/.mcp.json/cd/claude` je gotova.
+Za skriptovanje ili custom setup:
+
+```bash
+clade-init --peers alice bob --output /tmp/clade-demo
+# Generise tokens.json + per-peer YAML + .mcp.json snippete + CLAUDE.md
+```
+
+Onda ti rucno pokrenes relay (`clade-relay --tokens ...`) i Claude per peer.
+
+---
+
+## MCP integracija — kako Claude vidi clade tool-ove
+
+**Kratko:** drop `.mcp.json` u dir → `cd` tamo → `claude`. Sve ostalo je automatsko.
+
+**Detaljno:** Claude Code podrzava 3 nacina ucitavanja MCP server-a:
+
+1. **Project-scoped** (`.mcp.json` u trenutnom radnom dir-u) — auto-discover. **Ovo je sto Clade koristi.**
+2. **User-scoped** (`~/.config/claude/mcp.json`) — primenjuje se na sve Claude sesije.
+3. **CLI flag** (`claude --mcp-config /path/to/config.json`) — one-off.
+
+`.mcp.json` koji generisemo izgleda ovako:
+
+```json
+{
+  "mcpServers": {
+    "clade": {
+      "command": "/opt/clade-a2a/.venv/bin/python",
+      "args": ["/opt/clade-a2a/agent/main.py"],
+      "env": {"CLADE_CONFIG": "/path/to/<peer>.yaml"}
+    }
+  }
+}
+```
+
+Kad pokrenes `claude` u tom dir-u, Claude:
+1. Cita `.mcp.json`
+2. Spawn-uje navedeni Python proces kao stdio child
+3. Komunicira sa njim preko JSON-RPC (MCP protokol)
+4. Process registruje 5 `clade_*` tool-ova
+5. Claude moze odmah da ih poziva ("Pitaj bob-a...")
+
+Nikakva konfiguracija u Claude UI nije potrebna. **0 setup u Claude-u sam.** Sve je u dir-u.
 
 ---
 
