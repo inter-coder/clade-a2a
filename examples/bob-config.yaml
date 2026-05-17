@@ -1,7 +1,0 @@
-# Clade Agent — Bob (Faza 1)
-my_id: bob
-relay_url: http://localhost:7777
-bearer_token: rnRHgex4Jltjilnpd7wKlw5vQRYtFyDx1VH5t_3z1EY
-peers:
-  alice: fcf3c529ba3b032cf60348129a4051e2feb1395620ce8c76037059115974bc08
-audit_db: /tmp/clade-bob-audit.db
