@@ -92,12 +92,15 @@ def main() -> int:
         print(f"  ✓ {peer}.yaml")
 
     # 4) .mcp.json snippeti za Claude Code
-    # Detektuj agent/main.py putanju iz instalacije
+    # Detektuj agent/main.py putanju iz instalacije. Importujemo samo agent
+    # package (ne agent.main), da izbegnemo eager config load koji bi rusio
+    # bootstrap kad CLADE_CONFIG nije setovan.
     try:
-        import agent.main as agent_main  # noqa: PLC0415
-        agent_module_path = agent_main.__file__
-    except ImportError:
-        # Fallback: pretpostavi da je clade-a2a u istom python-u
+        import agent  # noqa: PLC0415
+        agent_module_path = str(Path(agent.__file__).parent / "main.py")
+        if not Path(agent_module_path).exists():
+            raise ImportError(f"agent/main.py not found at {agent_module_path}")
+    except (ImportError, SystemExit) as e:
         agent_module_path = "/path/to/clade-a2a/agent/main.py"
         print(f"  ⚠ ne mogu da detektujem agent/main.py — koristim placeholder {agent_module_path}")
 

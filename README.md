@@ -45,7 +45,29 @@ Sve komande tada idu kroz `.venv/bin/clade-*` ili `.venv/bin/python -m relay.mai
 
 ---
 
-## Quick start — 60 sekundi do prve poruke
+## Quick start — najlakši put (wizard)
+
+```bash
+./scripts/clade-wizard.sh
+```
+
+Wizard te pita za:
+- Ime projekta (default: `my-clade-<datum>`)
+- Lokaciju (default: `~/clade-projects/<ime>`)
+- Broj peer-ova + ime svakog (default: 2, default imena: `frontend`/`katana` itd.)
+- Relay host/port (default: `127.0.0.1:7777`)
+
+Pa onda automatski:
+1. Generise sve config-e + kljuceve
+2. Pokrece relay u pozadini (sa health check-om)
+3. Pravi `start-<peer>.sh` skriptu za svakog peer-a
+4. Pravi `status.sh`, `stop.sh`, `start-relay.sh` helpere
+
+Posle wizard-a, samo otvoris N terminala i pokrenes `start-<peer>.sh` u svakom. Cela komplikacija sa `mkdir/cp/.mcp.json/cd/claude` je gotova.
+
+---
+
+## Quick start — manual (60 sekundi)
 
 ### 1. Bootstrap projekat
 
