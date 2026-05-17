@@ -42,7 +42,7 @@ clade-agent = "agent.main:main"
 clade-init = "clade_cli.init:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["relay", "agent", "clade_cli"]
+packages = ["relay", "agent", "clade_cli", "clade"]
 include = ["relay/ui/*.html"]
 
 [tool.hatch.build.targets.wheel.force-include]
