@@ -1,32 +1,74 @@
-"""Minimalan peers.yaml loader za PR#2. Full schema iz §2.4 dolazi u PR#4.
+"""peers.yaml — v2 schema iz samozapazanja §2.4.
 
-Trenutno podrzavamo samo ono sto `clade serve` treba:
-- `self`: koji peer si TI na ovoj masini
-- `peers[name].socket`: unix socket path za peer-to-peer (lokalan)
-- `peers[name].http_port`: 127.0.0.1 port za MCP klijent / health
-- `peers[name].audit_db`: SQLite audit DB path
-- `peers[name].workdir`: (opciono) workdir za daemon-spawn Claude proces
+Jedan fajl po masini: `~/.config/clade/peers.yaml`. Sve ostalo se izvodi iz njega.
 
-Tilde-expand na load-u (`~/...` → `/home/user/...`). Pydantic validacija sa
-strict mode (extra='forbid') — nepoznata polja → ValidationError, ne tihi drop."""
+Pun primer:
+
+```yaml
+version: 2                     # protocol/schema verzija (strict major match)
+self: katana                   # koji peer si TI na ovoj masini
+peers:
+  katana:
+    transport: unix
+    socket: /run/user/1000/clade/katana.sock
+    http_port: 9001
+    audit_db: ~/.local/state/clade/katana/audit.db
+    workdir: ~/clade-projects/test/workdirs/katana
+    role: interactive          # interactive | headless | both
+  dusan:
+    transport: unix
+    socket: /run/user/1000/clade/dusan.sock
+    role: headless
+  remote_peer:
+    transport: relay
+    relay_url: https://relay.example.com
+    secret_hex: ${env:CLADE_REMOTE_SECRET}   # iz env, ne u fajlu
+    role: headless
+```
+
+**Secret substitution:** `${env:VAR_NAME}` u secret_hex polju se zamenjuje
+sa vrednoscu env varijable na load-u. Ne prilagodjava ostala polja — ne
+zelimo da peers.yaml postane shell jezik."""
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
+
+SUPPORTED_SCHEMA_VERSION = 2
+
+Transport = Literal["unix", "relay"]
+Role = Literal["interactive", "headless", "both"]
 
 
 class PeerEntry(BaseModel):
-    """Konfiguracija jednog peer-a (sebe ili drugog)."""
+    """Konfiguracija jednog peer-a (sebe ili drugog).
+
+    Validacija je conditional na `transport`:
+    - `transport=unix`: socket je preporucljiv (ako fali, fallback na konvenciju)
+    - `transport=relay`: relay_url i secret_hex su obavezni
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    socket: str | None = None         # unix:///... (samo ako transport=unix, default)
-    http_port: int | None = None      # 127.0.0.1:<port> za MCP klijent
-    audit_db: str | None = None       # SQLite path (samo za self)
-    workdir: str | None = None        # za spawn `claude --print`, opciono
+    transport: Transport = "unix"
+    role: Role = "headless"
+
+    # Unix transport polja
+    socket: str | None = None
+    http_port: int | None = None
+    audit_db: str | None = None
+    workdir: str | None = None
+
+    # Relay transport polja
+    relay_url: str | None = None
+    secret_hex: str | None = None     # podrzava ${env:VAR} substituciju
+    bearer_token: str | None = None   # za relay auth
 
     @field_validator("socket", "audit_db", "workdir", mode="before")
     @classmethod
@@ -35,14 +77,51 @@ class PeerEntry(BaseModel):
             return None
         return str(Path(str(v)).expanduser())
 
+    @field_validator("secret_hex", "bearer_token", mode="before")
+    @classmethod
+    def _expand_env(cls, v: str | None) -> str | None:
+        """${env:VAR_NAME} → os.environ['VAR_NAME']. Ako env nije set, ostavlja
+        literalan string da downstream layer moze da reaguje (ili pukne)."""
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            return v
+        match = re.fullmatch(r"\$\{env:([A-Z_][A-Z0-9_]*)\}", v.strip())
+        if match:
+            env_name = match.group(1)
+            return os.environ.get(env_name, v)  # fallback na literal ako env nije set
+        return v
+
+    @model_validator(mode="after")
+    def _conditional_required(self) -> "PeerEntry":
+        if self.transport == "relay":
+            if not self.relay_url:
+                raise ValueError("transport=relay zahteva relay_url")
+            if not self.secret_hex:
+                raise ValueError("transport=relay zahteva secret_hex (HMAC pair)")
+            if not self.bearer_token:
+                raise ValueError("transport=relay zahteva bearer_token")
+        return self
+
 
 class PeersConfig(BaseModel):
-    """Top-level peers.yaml schema (PR#2 minimal)."""
+    """Top-level peers.yaml schema."""
 
     model_config = ConfigDict(extra="forbid")
 
+    version: int = 2
     self: str
     peers: dict[str, PeerEntry]
+
+    @field_validator("version")
+    @classmethod
+    def _check_version(cls, v: int, info: ValidationInfo) -> int:
+        if v != SUPPORTED_SCHEMA_VERSION:
+            raise ValueError(
+                f"peers.yaml version={v} not supported; "
+                f"this clade build expects version={SUPPORTED_SCHEMA_VERSION}"
+            )
+        return v
 
     def me(self) -> PeerEntry:
         """Vrati moju entry — convenience."""
@@ -58,10 +137,18 @@ class PeersConfig(BaseModel):
             raise ValueError(f"'{name}' is self, ne moze biti drugi peer")
         return self.peers[name]
 
+    def interactive_peers(self) -> dict[str, PeerEntry]:
+        """Peer-ovi sa role interactive ili both — oni dobijaju .mcp.json."""
+        return {n: p for n, p in self.peers.items() if p.role in ("interactive", "both")}
+
 
 def load(path: str | Path) -> PeersConfig:
     """Ucitaj peers.yaml. Baca FileNotFoundError ako ne postoji."""
     p = Path(path).expanduser()
     with open(p) as f:
         data = yaml.safe_load(f) or {}
+    # Backward compat: ako fali version polje, pretpostavimo v2 (ne v1, jer v1
+    # je bio dict bez version-a sa drugacijim semantikom)
+    if isinstance(data, dict) and "version" not in data:
+        data["version"] = SUPPORTED_SCHEMA_VERSION
     return PeersConfig(**data)

@@ -322,19 +322,32 @@ async def _run(cfg_path: Path, peer: str | None) -> None:
 
 
 def main() -> int:
-    """`python -m clade serve --peer X --config path/to/peers.yaml`."""
+    """`python -m clade <subcommand>`. Subkomande: serve, init."""
     import argparse  # noqa: PLC0415
 
-    parser = argparse.ArgumentParser(prog="clade", description="Clade A2A v2.0 — always-on peer process")
+    parser = argparse.ArgumentParser(prog="clade", description="Clade A2A v2.0 — peer-to-peer agent komunikacija")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    serve = sub.add_parser("serve", help="Pokreni always-on proces za peer")
-    serve.add_argument("--peer", default=None,
-                       help="Override 'self' iz peers.yaml (za testiranje)")
-    serve.add_argument("--config", default="~/.config/clade/peers.yaml",
-                       help="Path do peers.yaml (default: ~/.config/clade/peers.yaml)")
-    serve.add_argument("--log-level", default="INFO",
-                       choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    # serve
+    serve_p = sub.add_parser("serve", help="Pokreni always-on proces za peer")
+    serve_p.add_argument("--peer", default=None,
+                         help="Override 'self' iz peers.yaml (za testiranje)")
+    serve_p.add_argument("--config", default="~/.config/clade/peers.yaml",
+                         help="Path do peers.yaml (default: ~/.config/clade/peers.yaml)")
+    serve_p.add_argument("--log-level", default="INFO",
+                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+
+    # init
+    init_p = sub.add_parser("init", help="Bootstrap peers.yaml + systemd unit + .mcp.json")
+    init_p.add_argument("--self", required=True, dest="self",
+                        help="Ime peer-a na ovoj masini (npr. katana)")
+    init_p.add_argument("--peer", action="append", default=[],
+                        help="Drugi peer (moze ponoviti: --peer dusan --peer predrag). "
+                             "Ignorise se ako peers.yaml vec postoji.")
+    init_p.add_argument("--apply", action="store_true",
+                        help="Stvarno upisi fajlove (default: dry-run preview)")
+    init_p.add_argument("--config", default=None,
+                        help="Override default ~/.config/clade/peers.yaml path-a")
 
     args = parser.parse_args()
 
@@ -347,12 +360,18 @@ def main() -> int:
         cfg_path = Path(args.config).expanduser()
         if not cfg_path.exists():
             print(f"clade: peers.yaml ne postoji: {cfg_path}", file=sys.stderr)
+            print(f"clade: pokreni `clade init --self <ime> --peer <drugi>` prvo", file=sys.stderr)
             return 1
         try:
             asyncio.run(_run(cfg_path, args.peer))
         except KeyboardInterrupt:
             pass
         return 0
+
+    if args.cmd == "init":
+        from clade.init import cli_init  # noqa: PLC0415
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
+        return cli_init(args)
 
     return 0
 
