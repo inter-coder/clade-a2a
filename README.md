@@ -2,7 +2,24 @@
 
 > Bezbedna Agent-to-Agent komunikacija izmedju Claude Code instanci. Generican, projekt-agnostican, koristi se za bilo koji par/grupu agenata.
 
-**Status:** v0.5 — production-ready za LAN/VPN deploy. Pip-installable.
+**Status:** v0.6 — daemon model (uvek slusa + auto-odgovara). Production-ready za LAN/VPN.
+
+## Mental model
+
+```
+Svaka peer masina ima:
+
+  DAEMON (uvek tece, terminal 1)        ←  polluje relay svake 2s
+    ↓ auto-odgovara na 'ask' poruke         AUTO-odgovara na asks
+    spawn-uje claude --print                kroz claude --print
+
+  INTERACTIVE CLAUDE (po potrebi, t.2)  ←  TI kucas "pitaj X o Y"
+                                           Claude shvati = clade_ask
+                                           daemon na drugoj strani odgovara
+                                           tvoj Claude prikaze odgovor
+```
+
+Daemon je za RECEIVING (uvek listening). Interactive je za SENDING (kad TI inicirases).
 
 ---
 

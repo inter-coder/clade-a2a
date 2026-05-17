@@ -265,10 +265,22 @@ EOF
 
   cp "$TMP_BOOTSTRAP/CLAUDE.md" "$AGENT_DIR/"
 
-  # start.sh — pokrece Claude sa pravim configom
+  # Sacuvaj .mcp.json kao template (sed-uje se runtime-om u claude.sh)
+  mv "$AGENT_DIR/.mcp.json" "$AGENT_DIR/.mcp.json.template"
+
+  # start.sh — pokrece DAEMON (uvek slusa, auto-odgovara na asks)
   cat > "$AGENT_DIR/start.sh" <<EOF
 #!/bin/bash
-# Pokrene Claude Code za peer "$peer" sa Clade A2A integracijom.
+# Pokrene Clade Agent DAEMON za peer "$peer".
+# Daemon polluje relay svake 2s, auto-odgovara na ask poruke kroz
+# 'claude --print' subprocess.
+#
+# Use:
+#   ./start.sh             - safe mode (Claude moze tražiti permission)
+#   ./start.sh --yolo      - YOLO mode (--dangerously-skip-permissions)
+#
+# Stop:
+#   Ctrl+C u istom terminalu, ILI: ./stop.sh
 
 set -e
 cd "\$(dirname "\$0")"
@@ -281,32 +293,112 @@ if [[ ! -x "$TARGET_PYTHON" ]]; then
   exit 1
 fi
 
-# Rewrite .mcp.json sa pravim apsolutnim putanjama (cwd-dependent)
-sed "s|%CONFIG_PATH%|\$HERE/$peer.yaml|" .mcp.json.template > .mcp.json 2>/dev/null || true
-
 # Health check relay-a
-echo "Test relay konekcije..."
-if curl -sf --max-time 5 "$RELAY_URL/health" > /dev/null; then
-  echo "✓ Relay OK ($RELAY_URL)"
-else
+if ! curl -sf --max-time 5 "$RELAY_URL/health" > /dev/null; then
   echo "⚠ Relay nedostupan na $RELAY_URL"
-  echo "  Proveri: je li server-bundle pokrenut na ciljnoj masini?"
-  echo "  Proveri: VPN/firewall otvoren za port?"
-  read -rp "Nastaviti svakako? [y/N] " Y
+  echo "  Daemon ce probati anyway (retry-uje), ali ne moze raditi posao."
+  read -rp "Nastaviti? [y/N] " Y
   [[ "\${Y,,}" == "y" ]] || exit 1
 fi
 
-# Sad pokreni Claude u ovom dir-u — .mcp.json + CLAUDE.md su pored
-echo ""
-echo "Pokrecem Claude Code u: \$HERE"
-echo "Claude ce automatski naci .mcp.json i ucitati clade tool-ove."
-echo ""
-exec claude
+# Sacuvaj PID za stop.sh
+PIDFILE="\$HERE/daemon.pid"
+echo \$\$ > "\$PIDFILE"
+trap "rm -f \$PIDFILE" EXIT
+
+export CLADE_CONFIG="\$HERE/$peer.yaml"
+exec "$TARGET_PYTHON" -m agent.daemon "\$@"
 EOF
   chmod +x "$AGENT_DIR/start.sh"
 
-  # Sacuvaj .mcp.json kao template (jer start.sh sed-uje na pravi path runtime-om)
-  mv "$AGENT_DIR/.mcp.json" "$AGENT_DIR/.mcp.json.template"
+  # stop.sh — kill daemon
+  cat > "$AGENT_DIR/stop.sh" <<EOF
+#!/bin/bash
+# Gasi Clade daemon za peer "$peer".
+cd "\$(dirname "\$0")"
+PIDFILE="./daemon.pid"
+if [[ ! -f "\$PIDFILE" ]]; then
+  echo "Daemon nije pokrenut (nema daemon.pid)."
+  # Pokusaj svakako da nadjes proces (ako je startovan ne kroz start.sh):
+  PIDS=\$(pgrep -f "agent.daemon.*CLADE_CONFIG=.*$peer.yaml" 2>/dev/null || true)
+  if [[ -n "\$PIDS" ]]; then
+    echo "Nasao orphan daemon proces(e): \$PIDS"
+    read -rp "Gasiti ih? [y/N] " Y
+    [[ "\${Y,,}" == "y" ]] && kill \$PIDS && echo "Ugasen."
+  fi
+  exit 0
+fi
+PID=\$(cat "\$PIDFILE")
+if kill "\$PID" 2>/dev/null; then
+  echo "Daemon (PID \$PID) ugasen."
+else
+  echo "Daemon (PID \$PID) nije aktivan."
+fi
+rm -f "\$PIDFILE"
+EOF
+  chmod +x "$AGENT_DIR/stop.sh"
+
+  # status.sh — quick health
+  cat > "$AGENT_DIR/status.sh" <<EOF
+#!/bin/bash
+# Status Clade daemon-a + agent-a za peer "$peer".
+cd "\$(dirname "\$0")"
+echo "=== Daemon ==="
+if [[ -f daemon.pid ]] && kill -0 \$(cat daemon.pid) 2>/dev/null; then
+  echo "✓ Daemon tece (PID \$(cat daemon.pid))"
+else
+  echo "✗ Daemon NE tece (nema daemon.pid ili process mrtav)"
+fi
+
+echo ""
+echo "=== Relay ==="
+if curl -sf --max-time 3 "$RELAY_URL/health" 2>/dev/null | "$TARGET_PYTHON" -m json.tool; then
+  :
+else
+  echo "✗ Relay nedostupan na $RELAY_URL"
+fi
+
+echo ""
+echo "=== Inbox size (server side) ==="
+TOKEN=\$(grep '^bearer_token:' $peer.yaml | awk '{print \$2}')
+curl -sf "$RELAY_URL/health" -H "Authorization: Bearer \$TOKEN" 2>/dev/null | \\
+  "$TARGET_PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d.get('store',{}).get('inbox_sizes',{}))"
+EOF
+  chmod +x "$AGENT_DIR/status.sh"
+
+  # claude.sh — opens interactive Claude (separate terminal usage)
+  cat > "$AGENT_DIR/claude.sh" <<EOF
+#!/bin/bash
+# Otvara INTERACTIVE Claude sesiju za peer "$peer".
+# Ovo koristis kad zelis da TI inicijaras komunikaciju ("pitaj X o Y").
+# Daemon u drugom terminalu vec auto-odgovara na incoming poruke.
+
+set -e
+cd "\$(dirname "\$0")"
+HERE="\$(pwd)"
+
+if [[ ! -x "$TARGET_PYTHON" ]]; then
+  echo "ERROR: clade-a2a nije instaliran u $TARGET_PATH"
+  exit 1
+fi
+
+# Rewrite .mcp.json sa pravim apsolutnim putanjama
+sed "s|%CONFIG_PATH%|\$HERE/$peer.yaml|" .mcp.json.template > .mcp.json
+
+# Daemon health warning
+if [[ ! -f daemon.pid ]] || ! kill -0 \$(cat daemon.pid 2>/dev/null) 2>/dev/null; then
+  echo "⚠ Daemon NE tece — incoming asks od drugih peer-ova nece dobiti odgovor."
+  echo "  Pokreni: ./start.sh (u drugom terminalu)"
+  echo ""
+fi
+
+echo "Otvaram interactive Claude — koristi prirodan jezik:"
+echo "  'Pitaj <peer> koliko je 7*8'"
+echo "  'Javi <peer> da je deploy gotov'"
+echo ""
+exec claude
+EOF
+  chmod +x "$AGENT_DIR/claude.sh"
 
   # Per-agent README
   OTHER_PEERS=()
@@ -318,87 +410,127 @@ EOF
 
 Ovo je sve sto treba za peer **$peer** na njegovoj masini.
 
-## Preduslov (jednom)
+## Sta sadrzi
 
-Instaliraj clade-a2a:
+\`\`\`
+start.sh           ← pokrene DAEMON (uvek slusa, auto-odgovara) — TERMINAL 1
+claude.sh          ← otvara INTERACTIVE Claude (da posaljes nesto) — TERMINAL 2
+stop.sh            ← gasi daemon
+status.sh          ← daemon + relay zdravlje
+$peer.yaml         ← config (bearer token + HMAC secrets) — SECRET, 0600
+.mcp.json.template ← template za Claude MCP integraciju
+CLAUDE.md          ← instrukcije za interactive Claude
+\`\`\`
+
+## Preduslov (jednom po masini)
+
+Instaliraj clade-a2a + Claude Code CLI:
 
 \`\`\`bash
-sudo mkdir -p $TARGET_PATH
-sudo chown \$USER $TARGET_PATH
+sudo mkdir -p $TARGET_PATH && sudo chown \$USER $TARGET_PATH
 git clone https://github.com/inter-coder/clade-a2a.git $TARGET_PATH
 cd $TARGET_PATH
-~/.local/bin/uv venv  # ili: curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uv venv
-~/.local/bin/uv pip install -e .
+~/.local/bin/uv venv && ~/.local/bin/uv pip install -e .
+# (ako nemas uv: curl -LsSf https://astral.sh/uv/install.sh | sh)
 \`\`\`
 
-Mora i Claude Code:
+I Claude Code: vidi https://docs.claude.com/claude-code
+
+## Korak 1 — Pokreni DAEMON (uvek tece, terminal 1)
 
 \`\`\`bash
-# Vidi https://docs.claude.com/claude-code za instalaciju
+./start.sh           # safe mode
+# ili
+./start.sh --yolo    # YOLO mode (--dangerously-skip-permissions)
 \`\`\`
 
-## Pokretanje
+Daemon ce:
+- Polovati relay svake 2s za nove poruke
+- Auto-odgovarati na ask poruke kroz \`claude --print\` u pozadini
+- Logovati incoming send poruke (info, ne odgovara na njih)
+
+Stop: \`Ctrl+C\` ili \`./stop.sh\` iz drugog terminala.
+
+## Korak 2 — Otvori INTERACTIVE Claude (po potrebi, terminal 2)
+
+Kad zelis TI da posaljes nesto peer-u:
 
 \`\`\`bash
-./start.sh
+./claude.sh
 \`\`\`
 
-Sta start.sh radi:
-1. Proveri da je clade-a2a instaliran u $TARGET_PATH
-2. Test konekciju ka relay-u na $RELAY_URL
-3. Generise .mcp.json sa pravom putanjom do tvog config-a
-4. Pokrene \`claude\` u ovom dir-u — Claude ce automatski naci .mcp.json
-   i ucitati 5 clade_* tool-ova
-
-## Sta da kucnes u Claude
-
-Cim je Claude pokrenut, mozes:
+Sad u Claude prompt:
 
 \`\`\`
-Pitaj $SAMPLE_PEER koliko je 7 puta 8 preko clade_ask sa timeout 90s.
+Pitaj $SAMPLE_PEER koliko je 7 puta 8
 \`\`\`
 
-Ili samo:
+Claude automatski razume da treba \`clade_ask(to="$SAMPLE_PEER", ...)\`. Ne moras
+ti da kazes "preko clade_ask" — CLAUDE.md ga je vec naucio.
 
+Drugi primeri:
 \`\`\`
-Pogledaj inbox.
+Javi $SAMPLE_PEER da je deploy gotov
+Pitam $SAMPLE_PEER za status migracije
+Saznaj od $SAMPLE_PEER koliko je danas zahteva
 \`\`\`
 
-Claude ce pollovati \`clade_inbox\` (CLAUDE.md u ovom dir-u to zahteva)
-i odgovoriti na ask poruke automatski.
+## Sta peer dobija
 
-## Dostupni tool-ovi (vidi i CLAUDE.md)
+Na drugoj strani, $SAMPLE_PEER-ov daemon polluje inbox. Kad vidi tvoj ask,
+spawn-uje \`claude --print\` da izracuna odgovor i salje ga nazad. Tvoja
+interactive sesija dobija odgovor i prikazuje ga.
 
-- \`clade_send(to, payload)\` — fire-and-forget peer-u
-- \`clade_ask(to, payload, timeout_s)\` — sinhroni upit, blokira do odgovora
-- \`clade_inbox(max_items)\` — drenira sopstveni inbox
-- \`clade_reply(correlation_id, response, to)\` — odgovor na ask
-- \`clade_outbox_status()\` — debug stanje outbox-a
+Latencija: ~5-30 sekundi (zavisi od kompleksnosti pitanja i toga da li
+peer koristi YOLO mode).
+
+## Operativno
+
+\`\`\`bash
+./status.sh        # daemon + relay zdravlje
+./stop.sh          # gasi daemon
+./start.sh         # ponovo pokreni daemon
+\`\`\`
+
+Audit UI: $RELAY_URL/ui/audit (paste bearer token iz $peer.yaml)
 
 ## SECURITY
 
 - \`$peer.yaml\` sadrzi tvoj bearer token + HMAC secret(e) sa drugim peer-ovima.
 - Permissions 0600. **NIKAD u git, NIKAD u Slack/mejl.**
-- Ako shared secret procuri, drugi peer-ovi mogu da impersoniraju te kod jednih
-  i drugih. Rotiraj cim posumnjam (generator masina: \`clade-deploy.sh\` ponovo).
+- Ako shared secret procuri, drugi peer-ovi mogu da impersoniraju te.
+  Rotacija: generator pokrene \`clade-deploy.sh\` ponovo i distribuira nove bundle-ove.
+
+## YOLO mode — kad da koristim?
+
+Default je SAFE: \`claude --print\` ce traziti permission za tool koriscenje,
+ali kao headless poziv to znaci timeout (nema covek-u-petlji da approvuje).
+
+**YOLO** (\`--yolo\`) prosledjuje \`--dangerously-skip-permissions\`. Koristi ga
+kad ocekujes da peer poziva tool-ove da odgovori (npr. DB query). Trade-off:
+ako peer (ili compromised relay) posalje malicious prompt, Claude moze da
+izvrsi proizvoljne komande BEZ tvog approval-a.
+
+Granica: koristi YOLO samo kad VERUJES svim peer-ovima u svoj allowlist-u.
 
 ## Troubleshooting
 
-**Claude ne vidi clade_* tool-ove** — proveri:
-\`\`\`bash
-cat .mcp.json
-cat .mcp.json.template
-\`\`\`
-.mcp.json mora postojati i imati realne path-ove (ne %CONFIG_PATH%).
-Ako fali, ponovo pokreni \`./start.sh\`.
+**Daemon log pokazuje "claude exited 1"** — proveri da je \`claude\` u PATH-u
+i da si authentifikovan: \`claude --version\`. Ako trazi login: \`claude /login\`.
 
-**"Relay nedostupan"** — proveri sa relay masine:
+**Daemon log pokazuje "relay unreachable"** — proveri sa terminal-a:
 \`\`\`bash
-curl http://$RELAY_IP:$RELAY_PORT/health
+curl $RELAY_URL/health
 \`\`\`
+Ako pukne: VPN/firewall problem ili je server-bundle ugasen.
 
-**Inbox prazan iako sam siguran da je peer poslao** — peer-ov Claude jos uvek
-razmislja, nije efektivno pozvao tool. Sacekaj 5-10s, pa probaj opet.
+**Claude (interactive) ne vidi clade_* tool-ove** — proveri da \`./claude.sh\`
+generisao \`.mcp.json\` (ne template). \`cat .mcp.json\` — putanje moraju biti
+realne, ne \`%CONFIG_PATH%\`.
+
+**Inbox raste, daemon ne odgovara** — proveri daemon je up: \`./status.sh\`.
+Ako jeste up i ne hvata: vidi log u njegovom terminalu, mozda HMAC mismatch
+(secret kod tebe se razlikuje od secret kod peer-a).
 EOF
 
   ok "agent-$peer-bundle/ generisan"
@@ -435,20 +567,25 @@ SLEDECI KORACI:
 
 $(for p in "${PEERS[@]}"; do echo "   # Na $p masinu (zameni <ip> sa pravim):"; echo "   scp -r $OUT/agent-$p-bundle/ user@<ip>:~/clade-agent/"; echo ""; done)
 
-3) Na RELAY masini:
+3) Na RELAY masini (terminal 1):
 
    ssh user@$RELAY_IP
    cd ~/clade-server
    ./start.sh
    # → relay tece na 0.0.0.0:$RELAY_PORT, log na stdout
 
-4) Na svakoj agent masini (u zasebnom SSH-u):
+4) Na svakoj agent masini, pokreni DAEMON (terminal 1):
 
-$(for p in "${PEERS[@]}"; do echo "   ssh user@<$p-ip>"; echo "   cd ~/clade-agent"; echo "   ./start.sh"; echo "   # → Claude Code se otvori sa ucitanim clade_* tool-ovima"; echo ""; done)
+$(for p in "${PEERS[@]}"; do echo "   ssh user@<$p-ip>"; echo "   cd ~/clade-agent"; echo "   ./start.sh             # safe mode"; echo "   # ili: ./start.sh --yolo  # YOLO mode (--dangerously-skip-permissions)"; echo "   # → daemon polluje relay, auto-odgovara na asks koje stignu"; echo ""; done)
 
-5) Test u Claude (bilo kom peer-u):
+5) Kad zelis TI da posaljes nesto, na bilo kojoj agent masini (terminal 2):
 
-   "Pitaj <drugi-peer> koliko je 7 puta 8 preko clade_ask, timeout 90s."
+   cd ~/clade-agent
+   ./claude.sh
+   # → otvori interactive Claude
+   # Pa u prompt: "Pitaj <drugi-peer> koliko je 7 puta 8"
+   # → Claude automatski poziva clade_ask, daemon na drugoj strani odgovara,
+   #   ti dobijes odgovor
 
 ═══════════════════════════════════════════════════════════════
 MCP INTEGRACIJA OBJASNJENA:
