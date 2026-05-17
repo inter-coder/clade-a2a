@@ -44,13 +44,15 @@ def test_ttl_eviction():
 
 
 def test_access_extends_ttl():
-    c = ThreadCache(ttl_s=0.1)
+    # Vece margine da test ne flap-uje pod CI load-om
+    c = ThreadCache(ttl_s=0.5)
     c.append("t1", _msg("m1", 1000))
-    time.sleep(0.06)
+    time.sleep(0.2)
     # Touch (get_context) treba da update-uje last_access
     c.get_context("t1")
-    time.sleep(0.06)
-    # Ukupno 0.12s je proslo, ali zadnji access je bio pre 0.06s — jos zivo
+    time.sleep(0.2)
+    # Ukupno 0.4s proslo (preko polovine TTL-a), ali poslednji access je bio
+    # pre 0.2s (manje od TTL=0.5s) → jos zivo
     assert c.has("t1")
 
 

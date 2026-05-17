@@ -31,7 +31,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from aiohttp import web
+import uvicorn
 
 from clade import __version__
 from clade.audit import Audit
@@ -65,7 +65,7 @@ class Server:
         self.outbox: Outbox | None = None
         self.thread_cache = ThreadCache()
         self.unix_transport: UnixSocketTransport | None = None
-        self.http_runner: web.AppRunner | None = None
+        self.uvicorn_server: uvicorn.Server | None = None
         self._shutdown_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._start_time_s: float = 0.0
@@ -102,9 +102,9 @@ class Server:
         ))
         LOG.info("unix socket listener: %s", self.me.socket)
 
-        # HTTP /health server (aiohttp)
-        self.http_runner = await self._start_http_server()
-        LOG.info("http /health: http://127.0.0.1:%d/health", self.me.http_port)
+        # HTTP server: /health + MCP (uvicorn + fastmcp Starlette app)
+        self._tasks.append(asyncio.create_task(self._serve_http(), name="http_serve"))
+        LOG.info("http /health + MCP: http://127.0.0.1:%d", self.me.http_port)
 
         # Outbox retry loop u pozadini (v2 PR#3)
         self._tasks.append(asyncio.create_task(
@@ -130,9 +130,9 @@ class Server:
         # Stop peer transport prvo (sprecava nove inbound poruke)
         if self.unix_transport is not None:
             await self.unix_transport.stop()
-        # Stop HTTP server
-        if self.http_runner is not None:
-            await self.http_runner.cleanup()
+        # Stop HTTP/MCP server (uvicorn)
+        if self.uvicorn_server is not None:
+            self.uvicorn_server.should_exit = True
         # Cancel background tasks
         for t in self._tasks:
             t.cancel()
@@ -203,37 +203,21 @@ class Server:
 
         return Response(envelope=None)
 
-    # ---- HTTP server (/health) ----
+    # ---- HTTP server: MCP + /health (uvicorn + fastmcp Starlette) ----
 
-    async def _start_http_server(self) -> web.AppRunner:
-        app = web.Application()
-        app.router.add_get("/health", self._http_health)
+    async def _serve_http(self) -> None:
+        """Pokrene uvicorn na 127.0.0.1:http_port sa MCP + /health rutama.
+        Blokira do should_exit=True (postavljeno u stop())."""
+        from clade.mcp_server import build_mcp_app  # noqa: PLC0415
 
-        runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
+        app = build_mcp_app(self)
         assert self.me.http_port is not None
-        site = web.TCPSite(runner, "127.0.0.1", self.me.http_port)
-        await site.start()
-        return runner
-
-    async def _http_health(self, _req: web.Request) -> web.Response:
-        assert self.audit is not None
-        assert self.outbox is not None
-        outbox_stats = self.outbox.stats()
-        body: dict[str, Any] = {
-            "peer": self.me_id,
-            "version": __version__,
-            "protocol_version": "2.0.0",
-            "uptime_s": int(time.monotonic() - self._start_time_s),
-            "inbox_processed_total": self._metrics_inbox_count,
-            "last_message_at_ms": self._metrics_last_msg_ts_ms,
-            "thread_cache_size": self.thread_cache.size(),
-            "audit_count": self.audit.count(),
-            "outbox_pending": outbox_stats["pending"],
-            "outbox_dead": outbox_stats["dead"],
-            "socket": self.me.socket,
-        }
-        return web.json_response(body)
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=self.me.http_port,
+            log_level="warning", access_log=False, lifespan="on",
+        )
+        self.uvicorn_server = uvicorn.Server(config)
+        await self.uvicorn_server.serve()
 
     # ---- Transport dispatch (za outbox retry) ----
 

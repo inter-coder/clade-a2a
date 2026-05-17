@@ -151,16 +151,19 @@ def test_init_plan_first_run(tmp_path: Path):
     """Prvi run bez postojeceg peers.yaml — sve treba kreirati."""
     yaml_path = tmp_path / "peers.yaml"
     sysd_dir = tmp_path / "systemd"
-    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir)
+    workdir_root = tmp_path / "workdirs"
+    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir,
+             workdir_root=str(workdir_root), audit_dir=str(tmp_path / "state"),
+             socket_dir=str(tmp_path / "sockets"))
 
     # peers.yaml + systemd unit treba kreirati; .mcp.json za interactive peer (katana)
     created_paths = {p[0] for p in p.files_to_create}
     assert yaml_path in created_paths
     assert sysd_dir / "clade-katana.service" in created_paths
-    # .mcp.json u workdir-u katanae (default workdir je ~/.local/state/clade/workdirs/katana)
     mcp_paths = [path for path, _ in p.files_to_create if path.name == ".mcp.json"]
     assert len(mcp_paths) == 1
     assert "katana" in str(mcp_paths[0])
+    assert str(workdir_root) in str(mcp_paths[0])
 
 
 def test_init_plan_requires_peers_on_first_run(tmp_path: Path):
@@ -173,11 +176,13 @@ def test_init_plan_idempotent_when_files_exist(tmp_path: Path):
     """Drugi run posle prvog: sve fajlove vidi i prijavljuje 'skipped'."""
     yaml_path = tmp_path / "peers.yaml"
     sysd_dir = tmp_path / "systemd"
-    p1 = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir)
+    kw = dict(workdir_root=str(tmp_path / "workdirs"),
+              audit_dir=str(tmp_path / "state"),
+              socket_dir=str(tmp_path / "sockets"))
+    p1 = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir, **kw)  # type: ignore[arg-type]
     apply(p1)
 
-    # Drugi prolaz: peers.yaml postoji, sistemd unit postoji, .mcp.json postoji
-    p2 = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir)
+    p2 = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir, **kw)  # type: ignore[arg-type]
     assert p2.is_empty() or len(p2.files_to_create) == 0
     assert yaml_path in p2.files_to_skip
     assert sysd_dir / "clade-katana.service" in p2.files_to_skip
@@ -186,10 +191,12 @@ def test_init_plan_idempotent_when_files_exist(tmp_path: Path):
 def test_init_apply_writes_with_0600_mode(tmp_path: Path):
     yaml_path = tmp_path / "peers.yaml"
     sysd_dir = tmp_path / "systemd"
-    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir)
+    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir,
+             workdir_root=str(tmp_path / "workdirs"),
+             audit_dir=str(tmp_path / "state"),
+             socket_dir=str(tmp_path / "sockets"))
     count = apply(p)
     assert count > 0
-    # Permissions: secrets-bearing fajlovi (peers.yaml) moraju biti 0600
     assert (yaml_path.stat().st_mode & 0o777) == 0o600
 
 
@@ -209,7 +216,10 @@ def test_init_plan_rejects_self_mismatch(tmp_path: Path):
 def test_format_plan_includes_next_steps(tmp_path: Path):
     yaml_path = tmp_path / "peers.yaml"
     sysd_dir = tmp_path / "systemd"
-    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir)
+    p = plan("katana", ["dusan"], peers_yaml_path=yaml_path, systemd_dir=sysd_dir,
+             workdir_root=str(tmp_path / "workdirs"),
+             audit_dir=str(tmp_path / "state"),
+             socket_dir=str(tmp_path / "sockets"))
     text = format_plan_for_display(p)
     assert "systemctl --user enable" in text
     assert "clade-katana" in text

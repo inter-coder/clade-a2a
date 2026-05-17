@@ -46,6 +46,9 @@ def plan(
     *,
     peers_yaml_path: Path | None = None,
     systemd_dir: Path | None = None,
+    workdir_root: str | None = None,
+    audit_dir: str | None = None,
+    socket_dir: str | None = None,
 ) -> InitPlan:
     """Planiraj sta init treba da uradi — bez side effect-ova.
 
@@ -53,7 +56,8 @@ def plan(
     bez peers.yaml (korisnik mora dati listu). Ako peers.yaml POSTOJI, ucitamo
     ga i ignorisemo peer_ids.
 
-    `self_id` MORA biti dat — ime peer-a na ovoj masini."""
+    `workdir_root` / `audit_dir` / `socket_dir`: override default putanja
+    (npr. za test izolaciju)."""
     paths = default_paths()
     peers_yaml_path = peers_yaml_path or paths["peers_yaml"]
     systemd_dir = systemd_dir or paths["systemd_user_dir"]
@@ -76,7 +80,10 @@ def plan(
                 "(npr. `clade init --self katana --peer dusan --peer predrag`) "
                 "ili rucno kreiraj peers.yaml prvo"
             )
-        yaml_content = render_default_peers_yaml(self_id, peer_ids)
+        yaml_content = render_default_peers_yaml(
+            self_id, peer_ids,
+            workdir_root=workdir_root, audit_dir=audit_dir, socket_dir=socket_dir,
+        )
         out.dirs_to_create.append(peers_yaml_path.parent)
         out.files_to_create.append((peers_yaml_path, yaml_content))
         # Parsiraj sopstveni generisan content za downstream logiku
