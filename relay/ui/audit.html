@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clade A2A — Audit Log</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0a0e14;
+    color: #cdd6e0;
+    margin: 0;
+    padding: 16px;
+    font-size: 13px;
+  }
+  h1 { font-size: 14px; margin: 0 0 16px; color: #4ec9b0; text-transform: uppercase; letter-spacing: 0.2em; }
+  .controls {
+    background: #0f1419;
+    padding: 16px;
+    border: 1px solid #1f2630;
+    margin-bottom: 16px;
+    display: grid;
+    grid-template-columns: 1fr 200px 200px auto auto;
+    gap: 12px;
+    align-items: end;
+  }
+  label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: #6b7280; margin-bottom: 4px; }
+  input, select {
+    width: 100%;
+    background: #050810;
+    color: #cdd6e0;
+    border: 1px solid #1f2630;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  input:focus, select:focus { outline: none; border-color: #4ec9b0; }
+  button {
+    background: #4ec9b0;
+    color: #0a0e14;
+    border: none;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+  }
+  button:hover { background: #6fdbc0; }
+  button.secondary { background: transparent; color: #6b7280; border: 1px solid #1f2630; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left;
+    padding: 8px;
+    background: #0f1419;
+    color: #6b7280;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    border-bottom: 1px solid #1f2630;
+  }
+  td { padding: 6px 8px; border-bottom: 1px solid #1a1f29; vertical-align: top; }
+  tr:hover td { background: #0d1117; }
+  .ts { color: #6b7280; font-size: 11px; white-space: nowrap; }
+  .kind-send { color: #4ec9b0; }
+  .kind-ask { color: #d7ba7d; }
+  .kind-reply { color: #c586c0; }
+  .kind-inbox { color: #6b7280; }
+  .status-delivered, .status-asked, .status-replied { color: #4ec9b0; }
+  .status-rejected, .status-failed, .status-timeout { color: #f44747; }
+  .meta { display: flex; gap: 16px; padding: 12px; background: #0f1419; border: 1px solid #1f2630; margin-bottom: 16px; font-size: 11px; color: #6b7280; }
+  .meta strong { color: #cdd6e0; font-size: 13px; }
+  .empty { padding: 32px; text-align: center; color: #6b7280; }
+  .error { padding: 12px; background: #f44747; color: white; margin-bottom: 16px; }
+  details summary { cursor: pointer; color: #6b7280; font-size: 11px; }
+  details[open] { margin-top: 4px; }
+  pre { background: #050810; padding: 8px; border: 1px solid #1f2630; overflow: auto; font-size: 11px; max-width: 600px; }
+</style>
+</head>
+<body>
+
+<h1>// Clade Audit Log</h1>
+
+<div class="controls">
+  <div>
+    <label>Bearer token (any valid agent token)</label>
+    <input id="token" type="password" placeholder="Paste bearer token from tokens.json...">
+  </div>
+  <div>
+    <label>Filter: peer</label>
+    <input id="filterPeer" type="text" placeholder="alice / bob / ...">
+  </div>
+  <div>
+    <label>Filter: kind</label>
+    <select id="filterKind">
+      <option value="">all</option>
+      <option value="send">send</option>
+      <option value="ask">ask</option>
+      <option value="reply">reply</option>
+      <option value="inbox">inbox</option>
+    </select>
+  </div>
+  <button id="refreshBtn">Refresh</button>
+  <button class="secondary" id="autoBtn">Auto: off</button>
+</div>
+
+<div id="error" class="error" style="display:none"></div>
+<div id="meta" class="meta" style="display:none"></div>
+
+<table id="auditTable" style="display:none">
+  <thead>
+    <tr>
+      <th style="width:170px">Timestamp</th>
+      <th style="width:90px">From</th>
+      <th style="width:90px">To</th>
+      <th style="width:90px">Kind</th>
+      <th style="width:180px">Status</th>
+      <th>Message ID</th>
+    </tr>
+  </thead>
+  <tbody id="auditBody"></tbody>
+</table>
+
+<div id="empty" class="empty">Enter a bearer token and click Refresh.</div>
+
+<script>
+const tokenInput = document.getElementById('token');
+const filterPeer = document.getElementById('filterPeer');
+const filterKind = document.getElementById('filterKind');
+const refreshBtn = document.getElementById('refreshBtn');
+const autoBtn = document.getElementById('autoBtn');
+
+// Restore token from localStorage
+if (localStorage.getItem('clade-token')) {
+  tokenInput.value = localStorage.getItem('clade-token');
+}
+
+let autoTimer = null;
+let allEntries = [];
+
+function setError(msg) {
+  const el = document.getElementById('error');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function fmtTs(ms) {
+  return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function render() {
+  const peer = filterPeer.value.trim().toLowerCase();
+  const kind = filterKind.value;
+  const tbody = document.getElementById('auditBody');
+  const table = document.getElementById('auditTable');
+  const empty = document.getElementById('empty');
+  const meta = document.getElementById('meta');
+
+  const filtered = allEntries.filter(e => {
+    if (peer && e.from !== peer && e.to !== peer) return false;
+    if (kind && e.kind !== kind) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    table.style.display = 'none';
+    empty.style.display = 'block';
+    empty.textContent = allEntries.length === 0 ? 'No audit entries yet.' : 'No matches for filter.';
+    return;
+  }
+
+  empty.style.display = 'none';
+  table.style.display = 'table';
+
+  // Render newest first
+  tbody.innerHTML = filtered.slice().reverse().map(e => `
+    <tr>
+      <td class="ts">${fmtTs(e.ts)}</td>
+      <td>${e.from || '—'}</td>
+      <td>${e.to || '—'}</td>
+      <td class="kind-${e.kind || ''}">${e.kind || '—'}</td>
+      <td class="status-${(e.status || '').replace(/[:_].*$/, '')}">${e.status || '—'}</td>
+      <td><code>${(e.msg_id || '').slice(0, 8) || '—'}</code></td>
+    </tr>
+  `).join('');
+
+  meta.style.display = 'flex';
+  meta.innerHTML = `
+    <div>Showing <strong>${filtered.length}</strong> / <strong>${allEntries.length}</strong> entries</div>
+    <div>Last fetch: <strong>${new Date().toLocaleTimeString()}</strong></div>
+  `;
+}
+
+async function fetchAudit() {
+  const token = tokenInput.value.trim();
+  if (!token) { setError('Bearer token required'); return; }
+  localStorage.setItem('clade-token', token);
+  setError(null);
+
+  try {
+    const r = await fetch('/audit?tail=500', {
+      headers: {'Authorization': 'Bearer ' + token}
+    });
+    if (r.status === 401) { setError('Invalid bearer token (401)'); return; }
+    if (!r.ok) { setError(`HTTP ${r.status}: ${await r.text()}`); return; }
+    const data = await r.json();
+    allEntries = data.entries || [];
+    render();
+  } catch (e) {
+    setError(`Network error: ${e.message}`);
+  }
+}
+
+refreshBtn.addEventListener('click', fetchAudit);
+filterPeer.addEventListener('input', render);
+filterKind.addEventListener('change', render);
+
+autoBtn.addEventListener('click', () => {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    autoBtn.textContent = 'Auto: off';
+  } else {
+    autoTimer = setInterval(fetchAudit, 3000);
+    autoBtn.textContent = 'Auto: 3s';
+    fetchAudit();
+  }
+});
+
+// Auto-fetch ako vec ima token
+if (tokenInput.value) fetchAudit();
+</script>
+</body>
+</html>

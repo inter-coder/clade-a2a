@@ -8,6 +8,8 @@ __pycache__/
 .env
 *.db
 *.log
+dist/
+build/
 # Per-machine audit logs (created at runtime per cfg.audit_db path)
 clade-*-audit.db
 # Production tokens.json — NIKAD ne commitovati (secret)

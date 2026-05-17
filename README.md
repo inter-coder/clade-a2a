@@ -157,12 +157,26 @@ Odlozeno za Faza 5:
 - [ ] Web UI za audit log (basic HTML form + table)
 - [ ] Geo-anomaly detekcija (alert ako token koristi novu IP)
 
-### Faza 5 — Reuse za drugi projekat
+### Faza 5 — Reuse za drugi projekat ✓ (2026-05-17)
 
-- [ ] Generic config (peers ne hardkodovani — sve iz YAML-a)
-- [ ] Multi-tenancy na relay-u (per-token namespace u Redis-u)
-- [ ] Pip-installable paket (`pip install clade-a2a`)
-- [ ] Public docs (ako idemo open-source)
+- [x] Generic config (vec gotovo od Faze 0 — peers iz YAML-a)
+- [x] Pip-installable paket — `dist/clade_a2a-0.5.0-py3-none-any.whl`
+  - Entry points: `clade-relay`, `clade-agent`, `clade-init`
+  - `pyproject.toml` sa MIT licencom + hatchling build backend
+- [x] `clade init --peers X Y Z` CLI — bootstrap novog projekta:
+  - Generise tokens.json + per-peer YAML + .mcp.json snippete
+  - Pair-wise HMAC secrets (svaki par dobija svoj shared secret)
+  - CLAUDE.md template + Quickstart README
+  - File permissions 0600 na secrets
+- [x] Web UI za audit log — `GET /ui/audit` (HTML + JS, same-origin XHR)
+  - Bearer token u localStorage, filter po peer + kind, auto-refresh 3s
+- [x] Web UI iz Faza 4 sad zatvoren
+
+Odlozeno:
+- [ ] Multi-tenancy (per-token namespace u Redis-u) — premature za sad,
+  jedan deploy = jedan projekat
+- [ ] Geo-anomaly detekcija — defense-in-depth, low ROI za LAN
+- [ ] Public docs / open-source — pricamo kad imamo 2-3 stabilna konzumenta
 
 ---
 

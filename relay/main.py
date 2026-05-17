@@ -13,12 +13,14 @@ geo-anomaly detekcija, web UI za audit.
 
 import asyncio
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from relay.store import Store, make_store
@@ -264,10 +266,46 @@ async def get_inbox(agent_id: str, sender: Annotated[str, Depends(authenticate)]
 
 @app.get("/audit")
 async def get_audit(sender: Annotated[str, Depends(authenticate)], tail: int = 100) -> dict[str, Any]:
-    """Audit pristup — admin-only u Fazi 2+; sada svaki authenticated agent moze."""
+    """Audit pristup — svaki authenticated agent moze citati."""
     return {"entries": audit[-tail:], "total": len(audit)}
 
 
-if __name__ == "__main__":
+# ---- Web UI (Faza 5) ----
+
+_UI_PATH = Path(__file__).parent / "ui" / "audit.html"
+
+
+@app.get("/ui", response_class=HTMLResponse)
+@app.get("/ui/audit", response_class=HTMLResponse)
+async def ui_audit() -> str:
+    """Static HTML audit viewer. Korisnik unosi Bearer token u formu,
+    page polnja /audit endpoint preko XHR-a (same-origin)."""
+    if not _UI_PATH.exists():
+        raise HTTPException(404, "UI nije nadjen — verovatno paket nije instaliran sa relay/ui/")
+    return _UI_PATH.read_text(encoding="utf-8")
+
+
+def main() -> None:
+    """Entry point za `clade-relay` console script (vidi pyproject.toml)."""
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=7777, log_level="warning")
+
+    parser = argparse.ArgumentParser(description="Clade A2A Relay")
+    parser.add_argument("--host", default=os.environ.get("CLADE_RELAY_HOST", "127.0.0.1"),
+                        help="Host za listen (default: 127.0.0.1; za LAN: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("CLADE_RELAY_PORT", "7777")),
+                        help="Port (default: 7777)")
+    parser.add_argument("--log-level", default="info", choices=["debug", "info", "warning", "error"])
+    parser.add_argument("--tokens", default=None,
+                        help="Path do tokens.json (override default-a relay/tokens.json)")
+    args = parser.parse_args()
+
+    if args.tokens:
+        global TOKENS_PATH
+        TOKENS_PATH = Path(args.tokens)
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+
+
+if __name__ == "__main__":
+    main()

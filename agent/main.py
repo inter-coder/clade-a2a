@@ -435,5 +435,11 @@ async def clade_outbox_status() -> dict[str, Any]:
     }
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point za `clade-agent` console script. Citra CLADE_CONFIG iz
+    env-a ili koristi ./config.yaml — config je vec ucitan na importu."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

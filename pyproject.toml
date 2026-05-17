@@ -1,8 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "clade-a2a"
-version = "0.4.0"
-description = "Agent-to-Agent communication system for Claude Code instances"
+version = "0.5.0"
+description = "Agent-to-Agent (A2A) communication system for Claude Code instances — Bearer/HMAC-secured MCP relay with stdio peer agents"
+readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    {name = "Dušan Krstić", email = "dusan.krstic@symappsys.com"},
+]
+keywords = ["claude", "mcp", "a2a", "agent", "relay"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications",
+    "Topic :: Security",
+]
 dependencies = [
     "fastmcp>=2.0",
     "httpx>=0.27",
@@ -22,6 +39,14 @@ test = [
 [project.scripts]
 clade-relay = "relay.main:main"
 clade-agent = "agent.main:main"
+clade-init = "clade_cli.init:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["relay", "agent", "clade_cli"]
+include = ["relay/ui/*.html"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"relay/ui/audit.html" = "relay/ui/audit.html"
 
 [tool.uv]
 package = false
