@@ -1,0 +1,20 @@
+[project]
+name = "clade-a2a"
+version = "0.1.0"
+description = "Agent-to-Agent communication system for Claude Code instances"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+clade-relay = "relay.main:main"
+clade-agent = "agent.main:main"
+
+[tool.uv]
+package = false

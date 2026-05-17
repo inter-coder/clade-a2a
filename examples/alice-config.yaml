@@ -1,0 +1,5 @@
+# Clade Agent — Alice (POC)
+my_id: alice
+relay_url: http://localhost:7777
+peers:
+  - bob
