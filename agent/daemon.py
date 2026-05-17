@@ -44,6 +44,27 @@ CLAUDE_TIMEOUT_S = 90
 SHUTDOWN_EVENT = asyncio.Event()
 
 
+# ---- Payload → question text ekstrakcija ----
+
+def _extract_question(payload) -> str:
+    """Izvuci ljudski-citljiv question text iz ask payload-a.
+
+    Fallback chain: payload.question → payload.text → ceo payload (bez _meta polja)
+    kao JSON. Razlog: clade_message(content="str") pakuje u {"text": str},
+    a stara konvencija je {"question": str}. Treba podrzati oba bez breakage-a."""
+    if not isinstance(payload, dict):
+        return str(payload) if payload is not None else "(prazno pitanje)"
+    q = payload.get("question") or payload.get("text")
+    if q:
+        return str(q)
+    # Neither field — stringify ceo payload bez _meta polja kao fallback
+    import json as _json  # noqa: PLC0415
+    clean = {k: v for k, v in payload.items() if not k.startswith("_")}
+    if not clean:
+        return "(prazno pitanje)"
+    return _json.dumps(clean, ensure_ascii=False)
+
+
 # ---- File lock (v1.0.0) ----
 
 def _daemon_lock_path(cfg) -> Path:
@@ -159,13 +180,16 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
     )
     system_prompt = f"{base}\n\n{thread_context}" if thread_context else base
 
+    # Defense: nikad ne smemo prosledjivati None u args (TypeError u fork_exec).
+    safe_question = question if question else "(prazno pitanje od peer-a)"
+
     mcp_config = workdir / ".mcp.json"
     args = ["claude", "--print", "--append-system-prompt", system_prompt]
     if mcp_config.exists():
         args.extend(["--mcp-config", str(mcp_config)])
     if dangerous:
         args.append("--dangerously-skip-permissions")
-    args.extend(["--", question])
+    args.extend(["--", safe_question])
 
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -250,7 +274,7 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
 
     if kind == "ask":
         corr = env.get("correlation_id")
-        question = payload.get("question") if isinstance(payload, dict) else str(payload)
+        question = _extract_question(payload)
         log(f"{YELLOW}← ask   {RESET}{DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET}: {question}", "")
 
         # Thread context (v1.1.0): ucitaj last N poruka u istom threadu

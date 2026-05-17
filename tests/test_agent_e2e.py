@@ -347,3 +347,27 @@ async def test_relay_ask_default_timeout_is_90(relay_process, relay_url):
     schema = AskBody.model_json_schema()
     timeout_default = schema["properties"]["timeout_s"].get("default")
     assert timeout_default == 90, f"Expected timeout_s default 90, got {timeout_default}"
+
+
+def test_daemon_extract_question_handles_all_payload_shapes():
+    """clade_message(content="x") salje {"text": "x"} (bez 'question' key-a) —
+    daemon mora to da prepozna i ne sme da vrati None."""
+    from agent.daemon import _extract_question  # noqa: PLC0415
+    # Legacy convention
+    assert _extract_question({"question": "Q?"}) == "Q?"
+    # clade_message string convention
+    assert _extract_question({"text": "Hello"}) == "Hello"
+    # Question wins ako oba postoje
+    assert _extract_question({"question": "Q?", "text": "T"}) == "Q?"
+    # Sa _thread_id meta polja — ne sme se nadji u izlaznom JSON-u
+    assert _extract_question({"text": "Hi", "_thread_id": "t1"}) == "Hi"
+    # Dict bez 'question' i 'text' → JSON ceo payload (bez _meta)
+    out = _extract_question({"a": 1, "_thread_id": "t1"})
+    assert "_thread_id" not in out
+    assert '"a":1' in out.replace(" ", "")
+    # Edge: None
+    assert _extract_question(None) == "(prazno pitanje)"
+    # Edge: prazan dict
+    assert _extract_question({}) == "(prazno pitanje)"
+    # Non-dict, non-None
+    assert _extract_question("raw string") == "raw string"
