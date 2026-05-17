@@ -5,4 +5,4 @@ agent/ i clade_cli/ uklonjeni; sve novo zivi u ovom paketu. Tag v2.0.0
 oznacava prvobitni v2 release; v2.0.1 dodaje uvicorn signal handler fix.
 Vidi a2a-protocol.md §11 za changelog."""
 
-__version__ = "2.1.1"
+__version__ = "2.2.0"

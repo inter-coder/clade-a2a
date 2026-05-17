@@ -39,7 +39,9 @@ from clade.audit import Audit
 from clade.envelope import (
     Envelope, PROTOCOL_MAJOR, PROTOCOL_VERSION, check_protocol_compat,
 )
+from clade.hmac import sign as hmac_sign, verify as hmac_verify
 from clade.outbox import Outbox, outbox_retry_loop
+from clade.transport.http_remote import HttpRemoteTransport
 from clade.peers_config import PeerEntry, PeersConfig
 from clade.thread_cache import ThreadCache, ThreadMsg
 from clade.transport.types import DeliveryResult, Response
@@ -76,8 +78,14 @@ class Server:
         self._metrics_last_msg_ts_ms: int | None = None
 
     def _validate_me(self) -> None:
-        if not self.me.socket:
-            raise ValueError(f"peers.yaml: peers['{self.me_id}'].socket je obavezan za serve")
+        if self.me.transport == "unix":
+            if not self.me.socket:
+                raise ValueError(f"peers.yaml: peers['{self.me_id}'].socket je obavezan za transport=unix")
+        elif self.me.transport == "relay":
+            if not self.me.relay_url:
+                raise ValueError(f"peers.yaml: peers['{self.me_id}'].relay_url je obavezan za transport=relay")
+            if not self.me.bearer_token:
+                raise ValueError(f"peers.yaml: peers['{self.me_id}'].bearer_token je obavezan za self sa transport=relay (auth ka relay-u)")
         if not self.me.http_port:
             raise ValueError(f"peers.yaml: peers['{self.me_id}'].http_port je obavezan za serve")
         if not self.me.audit_db:
@@ -96,14 +104,22 @@ class Server:
         LOG.info("audit db: %s (pending outbox: %d)",
                  self.me.audit_db, self.outbox.pending_count())
 
-        # Peer-to-peer unix socket listener
-        assert self.me.socket is not None
-        self.unix_transport = UnixSocketTransport(socket_path=self.me.socket)
-        self._tasks.append(asyncio.create_task(
-            self.unix_transport.serve(self._on_peer_envelope),
-            name="unix_serve",
-        ))
-        LOG.info("unix socket listener: %s", self.me.socket)
+        # Peer-to-peer transport: unix socket listener (ako transport=unix)
+        # ili relay polling loop (ako transport=relay). v2.2.0+.
+        if self.me.transport == "unix":
+            assert self.me.socket is not None
+            self.unix_transport = UnixSocketTransport(socket_path=self.me.socket)
+            self._tasks.append(asyncio.create_task(
+                self.unix_transport.serve(self._on_peer_envelope),
+                name="unix_serve",
+            ))
+            LOG.info("unix socket listener: %s", self.me.socket)
+        elif self.me.transport == "relay":
+            from clade.relay_poller import relay_poll_loop  # noqa: PLC0415
+            self._tasks.append(asyncio.create_task(
+                relay_poll_loop(self), name="relay_poll",
+            ))
+            LOG.info("relay polling: %s/inbox/%s", self.me.relay_url, self.me_id)
 
         # HTTP server: /health + MCP (uvicorn + fastmcp Starlette app)
         self._tasks.append(asyncio.create_task(self._serve_http(), name="http_serve"))
@@ -294,14 +310,26 @@ class Server:
 
     async def _deliver_via_transport(self, envelope: Envelope, to_url: str) -> DeliveryResult:
         """Bira odgovarajuci transport na osnovu `to_url` schema-a.
-        - unix:// → UnixSocketTransport client mode
-        - http(s):// → HttpRemoteTransport (relay-mediated, dolazi u PR#4)
 
-        Trenutno samo unix; remote dolazi sa peers.yaml v2 schema-om."""
+        - `unix://...` → UnixSocketTransport client mode (on-host)
+        - `http(s)://...` → HttpRemoteTransport (cross-host kroz relay), v2.2.0
+
+        Za relay path, envelope MORA biti pre-signed (HMAC) od strane pozivaca
+        (vidi mcp_server.py:_do_clade_message). Ovaj dispatcher ne signe sam —
+        ne zna pair-wise secret (envelope.from_agent moze biti razlicit od
+        cfg.self ako je proxy)."""
         if to_url.startswith("unix://"):
             client = UnixSocketTransport()
             return await client.deliver(envelope, to_url=to_url)
-        # PR#4: HttpRemoteTransport ako transport=relay
+        if to_url.startswith("http://") or to_url.startswith("https://"):
+            # to_url je relay_url; bearer iz self entry-ja (auth ka relay-u)
+            if not self.me.bearer_token:
+                return DeliveryResult(ok=False,
+                                      error="self peer nema bearer_token za relay auth")
+            client_remote = HttpRemoteTransport(
+                relay_url=to_url, bearer_token=self.me.bearer_token,
+            )
+            return await client_remote.deliver(envelope, to_url="")
         return DeliveryResult(ok=False, error=f"unsupported to_url scheme: {to_url}")
 
     # ---- sd_notify watchdog ----

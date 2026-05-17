@@ -94,13 +94,12 @@ class PeerEntry(BaseModel):
 
     @model_validator(mode="after")
     def _conditional_required(self) -> "PeerEntry":
-        if self.transport == "relay":
-            if not self.relay_url:
-                raise ValueError("transport=relay zahteva relay_url")
-            if not self.secret_hex:
-                raise ValueError("transport=relay zahteva secret_hex (HMAC pair)")
-            if not self.bearer_token:
-                raise ValueError("transport=relay zahteva bearer_token")
+        # transport=relay zahteva relay_url uvek. secret_hex i bearer_token
+        # su asimetricni — self entry ima bearer_token (auth ka relay-u),
+        # other peer entries imaju secret_hex (pairwise HMAC). Validacija
+        # asimetrije ide na use-site (Server / mcp_server) gde znamo kontekst.
+        if self.transport == "relay" and not self.relay_url:
+            raise ValueError("transport=relay zahteva relay_url")
         return self
 
 
@@ -143,12 +142,26 @@ class PeersConfig(BaseModel):
 
 
 def load(path: str | Path) -> PeersConfig:
-    """Ucitaj peers.yaml. Baca FileNotFoundError ako ne postoji."""
-    p = Path(path).expanduser()
+    """Ucitaj peers.yaml. Baca FileNotFoundError ako ne postoji.
+
+    Relativni path-ovi u peer entries (socket, audit_db, workdir) se resolves
+    protiv peers.yaml dir-a (kao docker-compose volume mapping). Time wizard
+    moze generisati portable bundle gde su path-ovi `./workdirs/<peer>` —
+    radi bez obzira gde scp-ujes bundle."""
+    p = Path(path).expanduser().resolve()
     with open(p) as f:
         data = yaml.safe_load(f) or {}
-    # Backward compat: ako fali version polje, pretpostavimo v2 (ne v1, jer v1
-    # je bio dict bez version-a sa drugacijim semantikom)
     if isinstance(data, dict) and "version" not in data:
         data["version"] = SUPPORTED_SCHEMA_VERSION
+
+    # Resolve relativne path-ove protiv peers.yaml lokacije
+    parent_dir = p.parent
+    for peer_name, peer_data in (data.get("peers") or {}).items():
+        if not isinstance(peer_data, dict):
+            continue
+        for key in ("socket", "audit_db", "workdir"):
+            v = peer_data.get(key)
+            if v and isinstance(v, str) and not v.startswith(("/", "~")):
+                peer_data[key] = str((parent_dir / v).resolve())
+
     return PeersConfig(**data)

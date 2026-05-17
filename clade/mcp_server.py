@@ -127,14 +127,19 @@ async def _do_clade_message(
     except ValueError as e:
         return {"error": str(e)}
 
-    # PR#4.5: samo unix transport. relay transport dolazi kad wire-ujemo
-    # HttpRemoteTransport u Server._deliver_via_transport (sledeci PR).
-    if peer.transport != "unix":
-        return {"error": f"PR#4.5 supports only transport=unix peers; '{to}' has transport={peer.transport}"}
-    if not peer.socket:
-        return {"error": f"peer '{to}' nema socket path u peers.yaml"}
-
-    to_url = f"unix://{peer.socket}"
+    # Routing po peer.transport (v2.2.0 podrzava unix + relay)
+    if peer.transport == "unix":
+        if not peer.socket:
+            return {"error": f"peer '{to}' nema socket path u peers.yaml"}
+        to_url = f"unix://{peer.socket}"
+    elif peer.transport == "relay":
+        if not peer.relay_url:
+            return {"error": f"peer '{to}' nema relay_url u peers.yaml"}
+        if not peer.secret_hex:
+            return {"error": f"peer '{to}' nema secret_hex (HMAC pair) u peers.yaml"}
+        to_url = peer.relay_url
+    else:
+        return {"error": f"peer '{to}' ima nepoznat transport={peer.transport}"}
 
     # Build envelope (thread_id i reply_to su top-level u v2 — vidi §5)
     env = Envelope.new(
@@ -146,6 +151,11 @@ async def _do_clade_message(
         thread_id=thread_id,
         reply_to=reply_to,
     )
+
+    # HMAC sign za relay path (v2.2.0). Unix path ne treba — filesystem perms guard.
+    if peer.transport == "relay":
+        from clade.hmac import sign as hmac_sign  # noqa: PLC0415
+        env = env.model_copy(update={"hmac": hmac_sign(env, peer.secret_hex)})
 
     # Record outbound u thread cache (ako ima thread_id)
     if thread_id:
