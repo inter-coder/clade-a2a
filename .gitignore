@@ -8,3 +8,5 @@ __pycache__/
 .env
 *.db
 *.log
+# Per-machine audit logs (created at runtime per cfg.audit_db path)
+clade-*-audit.db

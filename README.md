@@ -87,14 +87,21 @@ Lokalni dev: 10–30s ask round-trip. Produkcija (NS↔Frankfurt): 10–90s. Ne 
 
 **Out of scope za Fazu 0:** auth, HMAC, TLS, replay protection, persistence, deployment.
 
-### Faza 1 — Sigurnosni layer (1 dan)
+### Faza 1 — Sigurnosni layer ✓ (2026-05-17)
 
-- [ ] Bearer token per agent (config + env var)
-- [ ] HMAC-SHA256 E2E per-pair (relay ne moze da forge-uje)
-- [ ] Nonce + timestamp anti-replay (5min window)
-- [ ] Peer allowlist na agent strani (ne samo na relay-u)
-- [ ] Audit log: SQLite lokalno + Redis stream na relay-u
-- [ ] Token rotation CLI alat
+- [x] Bearer token per agent (`relay/tokens.json` + `bearer_token` u config-u)
+- [x] HMAC-SHA256 E2E per-pair (relay ne moze da forge-uje, samo forward-uje)
+- [x] Nonce + timestamp anti-replay (5min window, in-memory dedup)
+- [x] Peer allowlist na agent strani (i na relay-u preko token mapping-a)
+- [x] Audit log: SQLite lokalno na agent-u (`/tmp/clade-{agent}-audit.db`)
+- [x] `scripts/gen-keys.sh` — generise sveze tokene + HMAC secrets
+
+Verifikovano kroz 6 scenarija (vidi commit poruku):
+no-auth → 401, bad token → 401, stale timestamp → 400, replay → 400,
+tampered HMAC → relay accept ALI receiver odbacuje, happy path → 200.
+
+Odlozeno za Faza 1.5: Redis stream na relay-u (i dalje in-memory),
+token rotation CLI (manual rotacija OK za 2-3 peer-a).
 
 ### Faza 2 — Deployment (1 dan)
 
