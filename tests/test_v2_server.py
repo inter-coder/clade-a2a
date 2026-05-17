@@ -142,9 +142,10 @@ async def test_serve_accepts_send_envelope(serve_proc):
 
 
 @pytest.mark.asyncio
-async def test_serve_ack_replies_to_ask(serve_proc):
-    """PR#2 placeholder: za 'ask' envelope, serve vraca ack reply (jer prava
-    claude integracija dolazi u PR#4)."""
+async def test_serve_ask_without_workdir_returns_error(serve_proc):
+    """v2.1.0: 'ask' envelope ide kroz ask_handler.handle_ask. Ako workdir
+    nije konfigurisan u peers.yaml (kao u ovom fixture-u), vraca _error
+    reply umesto crash-a — graceful degradation."""
     client = UnixSocketTransport()
     env = Envelope.new(
         from_agent="dusan", to_agent="katana", kind="ask",
@@ -157,7 +158,8 @@ async def test_serve_ack_replies_to_ask(serve_proc):
     assert res.response.kind == "reply"
     assert res.response.correlation_id == "c-test"
     assert res.response.thread_id == "t-ask"
-    assert "_ack" in res.response.payload
+    assert "_error" in res.response.payload
+    assert "workdir" in res.response.payload["_error"]
 
 
 @pytest.mark.asyncio
