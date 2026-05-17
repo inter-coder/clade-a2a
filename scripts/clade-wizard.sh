@@ -200,22 +200,79 @@ if ! curl -sf --max-time 1 "http://127.0.0.1:${RELAY_PORT}/health" >/dev/null 2>
   exit 1
 fi
 
-# ---- Korak 7: Generiši per-peer start skripte + helpere ----
-
-# start-<peer>.sh — otvara Claude za peer-a u svom radnom dir-u
+# ---- Korak 7: Generiši per-peer daemon + claude skripte ----
+# Per-peer: 3 skripte:
+#   start-<peer>-daemon.sh  — long-running daemon (terminal X)
+#   start-<peer>-claude.sh  — interactive Claude (terminal Y, opciono)
+#   stop-<peer>.sh          — kill daemon
 for peer in "${PEERS[@]}"; do
   PEER_WORKDIR="$PROJECT_DIR/workdirs/$peer"
   mkdir -p "$PEER_WORKDIR"
   cp "$PROJECT_DIR/mcp-config-$peer.json" "$PEER_WORKDIR/.mcp.json"
   cp "$PROJECT_DIR/CLAUDE.md" "$PEER_WORKDIR/CLAUDE.md"
 
-  cat > "$PROJECT_DIR/start-$peer.sh" <<EOF
+  PEER_PIDFILE="$PROJECT_DIR/$peer-daemon.pid"
+
+  # start-<peer>-daemon.sh
+  cat > "$PROJECT_DIR/start-$peer-daemon.sh" <<EOF
 #!/bin/bash
-# Otvara Claude Code za peer "$peer" u njegovom workdir-u.
-# Generisano sa clade-wizard.sh, $(date)
-exec env CLADE_CONFIG="$PROJECT_DIR/$peer.yaml" claude --add-dir "$PEER_WORKDIR"
+# Pokrene DAEMON za peer "$peer" (uvek slusa, auto-odgovara na asks).
+#
+# Use:
+#   ./start-$peer-daemon.sh           - safe mode
+#   ./start-$peer-daemon.sh --yolo    - YOLO mode (--dangerously-skip-permissions)
+#
+# Stop: Ctrl+C ili ./stop-$peer.sh
+
+set -e
+echo \$\$ > "$PEER_PIDFILE"
+trap "rm -f $PEER_PIDFILE" EXIT
+export CLADE_CONFIG="$PROJECT_DIR/$peer.yaml"
+cd "$ROOT"
+exec "$PY" -m agent.daemon "\$@"
 EOF
-  chmod +x "$PROJECT_DIR/start-$peer.sh"
+  chmod +x "$PROJECT_DIR/start-$peer-daemon.sh"
+
+  # start-<peer>-claude.sh
+  cat > "$PROJECT_DIR/start-$peer-claude.sh" <<EOF
+#!/bin/bash
+# Otvara INTERACTIVE Claude za peer "$peer".
+# Koristi kad TI zelis da posaljes nesto drugom peer-u.
+# Daemon (u drugom terminalu) vec auto-odgovara na incoming asks.
+
+if [[ ! -f "$PEER_PIDFILE" ]] || ! kill -0 \$(cat "$PEER_PIDFILE" 2>/dev/null) 2>/dev/null; then
+  echo "⚠ Daemon NE tece — pokreni ./start-$peer-daemon.sh u drugom terminalu prvo!"
+  echo ""
+fi
+
+cd "$PEER_WORKDIR"
+exec env CLADE_CONFIG="$PROJECT_DIR/$peer.yaml" claude
+EOF
+  chmod +x "$PROJECT_DIR/start-$peer-claude.sh"
+
+  # stop-<peer>.sh
+  cat > "$PROJECT_DIR/stop-$peer.sh" <<EOF
+#!/bin/bash
+# Gasi daemon za peer "$peer".
+if [[ -f "$PEER_PIDFILE" ]]; then
+  PID=\$(cat "$PEER_PIDFILE")
+  if kill "\$PID" 2>/dev/null; then
+    echo "Daemon $peer (PID \$PID) ugasen."
+  else
+    echo "Daemon $peer (PID \$PID) nije aktivan."
+  fi
+  rm -f "$PEER_PIDFILE"
+else
+  PIDS=\$(pgrep -f "agent.daemon.*$peer.yaml" 2>/dev/null || true)
+  if [[ -n "\$PIDS" ]]; then
+    echo "Nasao orphan $peer daemon proces(e): \$PIDS — gasim..."
+    kill \$PIDS
+  else
+    echo "Daemon $peer nije pokrenut."
+  fi
+fi
+EOF
+  chmod +x "$PROJECT_DIR/stop-$peer.sh"
 done
 
 # stop.sh — gasi relay
@@ -291,23 +348,79 @@ echo -e "${BOLD}${GREEN}══════════════════�
 echo ""
 echo -e "${BOLD}Sve je u: ${CYAN}$PROJECT_DIR${RESET}"
 echo ""
-echo -e "${BOLD}Sledeci koraci:${RESET}"
+echo -e "${BOLD}Sledeci koraci za KORISCENJE:${RESET}"
 echo ""
-echo -e "  ${CYAN}1.${RESET} Otvori N terminala (po jedan po peer-u) i pokreni:"
+echo -e "${BOLD}KORAK 1${RESET} — Pokreni DAEMON za svakog peer-a (po terminal):"
 for peer in "${PEERS[@]}"; do
-  echo -e "       ${YELLOW}$PROJECT_DIR/start-$peer.sh${RESET}"
+  echo -e "  ${YELLOW}$PROJECT_DIR/start-$peer-daemon.sh${RESET}        ${DIM}(safe mode)${RESET}"
+  echo -e "  ${DIM}# ili: $PROJECT_DIR/start-$peer-daemon.sh --yolo  (YOLO mode)${RESET}"
 done
 echo ""
-echo -e "  ${CYAN}2.${RESET} U svakoj Claude sesiji moze odmah da pita drugog peer-a:"
-echo -e "       ${YELLOW}\"Pitaj <peer> koliko je 7×8 preko clade_ask, timeout 90s.\"${RESET}"
+echo -e "  Daemon-i ce uvek slusati relay, AUTO-odgovarati na ask poruke."
 echo ""
-echo -e "  ${CYAN}3.${RESET} Audit log:  ${YELLOW}${RELAY_URL}/ui/audit${RESET}"
-echo "       (paste bilo koji bearer token iz $PROJECT_DIR/tokens.json)"
+echo -e "${BOLD}KORAK 2${RESET} — (Opciono) Otvori INTERACTIVE Claude da posaljes nesto:"
+for peer in "${PEERS[@]}"; do
+  echo -e "  ${YELLOW}$PROJECT_DIR/start-$peer-claude.sh${RESET}"
+done
+echo ""
+echo -e "  Onda u prompt: ${YELLOW}\"Pitaj <drugi-peer> koliko je 7*8\"${RESET}"
+echo -e "  (Claude automatski razume = clade_ask, daemon na drugoj strani odgovara)"
+echo ""
+echo -e "${BOLD}Audit log:${RESET}  ${YELLOW}${RELAY_URL}/ui/audit${RESET}"
+echo "  (paste bilo koji bearer token iz $PROJECT_DIR/tokens.json)"
 echo ""
 echo -e "${BOLD}Upravljanje:${RESET}"
-echo "  Status:   $PROJECT_DIR/status.sh"
-echo "  Stop:     $PROJECT_DIR/stop.sh"
-echo "  Restart:  $PROJECT_DIR/stop.sh && $PROJECT_DIR/start-relay.sh"
-echo "  Logs:     tail -f $LOG"
+echo "  Daemon status:   $PROJECT_DIR/status.sh"
+for peer in "${PEERS[@]}"; do
+  echo "  Stop $peer daemon:  $PROJECT_DIR/stop-$peer.sh"
+done
+echo "  Stop relay:      $PROJECT_DIR/stop.sh"
+echo "  Restart relay:   $PROJECT_DIR/start-relay.sh"
+echo "  Logs (relay):    tail -f $LOG"
+echo ""
+
+# Mini cheat sheet u txt fajlu
+cat > "$PROJECT_DIR/HOW_TO_USE.txt" <<EOF
+═══════════════════════════════════════════════════════════════
+Clade A2A — Lokalni test za projekat "$PROJECT_NAME"
+═══════════════════════════════════════════════════════════════
+
+Relay vec tece u pozadini (PID $(cat "$PIDFILE")).
+Audit UI: $RELAY_URL/ui/audit
+
+KORAK 1: U svakom svom terminalu pokreni daemon-a:
+$(for p in "${PEERS[@]}"; do echo "  Terminal X:  $PROJECT_DIR/start-$p-daemon.sh"; done)
+
+Daemon-i ce uvek slusati i AUTO-odgovarati na asks koje stignu.
+Vidis live aktivnost u terminalu (boje + timestamp).
+
+KORAK 2 (opciono): Kad TI hoces da posaljes pitanje, otvori
+interactive Claude u dodatnom terminalu:
+$(for p in "${PEERS[@]}"; do echo "  Terminal Y:  $PROJECT_DIR/start-$p-claude.sh"; done)
+
+Onda u Claude prompt (npr. iz "${PEERS[0]}" sesije):
+  "Pitaj ${PEERS[1]} koliko je 7*8"
+
+Sta se desi pod haubom:
+  1. Tvoj Claude shvata "pitaj ${PEERS[1]}" = clade_ask(to="${PEERS[1]}", ...)
+  2. Ask ide u ${PEERS[1]} inbox (na relay-u)
+  3. ${PEERS[1]} daemon polluje, vidi ask, spawn-uje claude --print
+  4. Claude izracuna "56", daemon salje clade_reply
+  5. Tvoj Claude dobija {"answer": "56"}, prikaze ti
+
+GASENJE:
+$(for p in "${PEERS[@]}"; do echo "  Daemon $p:  $PROJECT_DIR/stop-$p.sh"; done)
+  Relay:      $PROJECT_DIR/stop.sh
+
+YOLO MODE:
+Ako trazis daemon-u da odgovara koristeci tool-ove (bash, web fetch,
+file read), prepojaca \`--yolo\`:
+$(for p in "${PEERS[@]}"; do echo "  $PROJECT_DIR/start-$p-daemon.sh --yolo"; done)
+
+Trade-off: Claude moze izvrsiti bilo sta bez approval-a. Koristi samo
+kad verujes svim peer-ovima u svojoj allowlist-i.
+EOF
+
+echo -e "${BOLD}Cheat sheet:${RESET} cat ${YELLOW}$PROJECT_DIR/HOW_TO_USE.txt${RESET}"
 echo ""
 echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════${RESET}"
