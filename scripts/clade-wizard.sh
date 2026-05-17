@@ -120,8 +120,20 @@ DEFAULT_PORT="7777"
 ask "Relay port [${DEFAULT_PORT}]:" RELAY_PORT
 RELAY_PORT=${RELAY_PORT:-$DEFAULT_PORT}
 
-# Compute URL koji ide u config-e peer-ova
-if [[ "$RELAY_HOST" == "0.0.0.0" ]]; then
+# Razdvajamo BIND host (sta uvicorn slusa) od URL host (sta ide u peer config).
+#
+# Primer 1: user kuca 127.0.0.1 → BIND=127.0.0.1, URL=127.0.0.1 (samo lokalno)
+# Primer 2: user kuca 0.0.0.0  → BIND=0.0.0.0, URL=auto-detect LAN IP
+# Primer 3: user kuca 192.168.1.91 → BIND=0.0.0.0 (da lokalni health check radi),
+#                                     URL=192.168.1.91 (u peer config-ima)
+#
+# Razlog za 0.0.0.0 bind kad user kuca specifican IP: wizard-ov health check
+# i `status.sh` koriste 127.0.0.1, pa moraju da rade lokalno. Bind 0.0.0.0
+# znaci slusa na svim interfejsima ukljucujuci localhost + LAN.
+BIND_HOST="$RELAY_HOST"
+if [[ "$RELAY_HOST" == "127.0.0.1" ]] || [[ "$RELAY_HOST" == "localhost" ]]; then
+  RELAY_URL_HOST="127.0.0.1"
+elif [[ "$RELAY_HOST" == "0.0.0.0" ]]; then
   RELAY_URL_HOST=$(hostname -I 2>/dev/null | awk '{print $1}')
   if [[ -z "$RELAY_URL_HOST" ]]; then
     warn "Ne mogu da detektujem LAN IP — koristim 127.0.0.1 u config-ima."
@@ -129,10 +141,12 @@ if [[ "$RELAY_HOST" == "0.0.0.0" ]]; then
   else
     info "Slušam na svim interface-ima. Peer-ovi ce koristiti: ${RELAY_URL_HOST}:${RELAY_PORT}"
   fi
-elif [[ "$RELAY_HOST" == "127.0.0.1" ]] || [[ "$RELAY_HOST" == "localhost" ]]; then
-  RELAY_URL_HOST="127.0.0.1"
 else
+  # User je dao specifican IP (npr. 192.168.1.91) — bind 0.0.0.0 ali config IP ostaje korisnikov
+  BIND_HOST="0.0.0.0"
   RELAY_URL_HOST="$RELAY_HOST"
+  info "Bind: 0.0.0.0 (sva), Config URL: $RELAY_URL_HOST (sto si uneo)"
+  info "Peer-ovi ce koristiti: ${RELAY_URL_HOST}:${RELAY_PORT}"
 fi
 RELAY_URL="http://${RELAY_URL_HOST}:${RELAY_PORT}"
 
@@ -179,7 +193,7 @@ import sys, pathlib, uvicorn
 sys.path.insert(0, '$ROOT')
 import relay.main
 relay.main.TOKENS_PATH = pathlib.Path('$PROJECT_DIR/tokens.json')
-uvicorn.run(relay.main.app, host='$RELAY_HOST', port=$RELAY_PORT, log_level='info')
+uvicorn.run(relay.main.app, host='$BIND_HOST', port=$RELAY_PORT, log_level='info')
 " > "$LOG" 2>&1 < /dev/null &
 echo $! > "$PIDFILE"
 disown
@@ -326,7 +340,7 @@ import sys, pathlib, uvicorn
 sys.path.insert(0, '$ROOT')
 import relay.main
 relay.main.TOKENS_PATH = pathlib.Path('$PROJECT_DIR/tokens.json')
-uvicorn.run(relay.main.app, host='$RELAY_HOST', port=$RELAY_PORT, log_level='info')
+uvicorn.run(relay.main.app, host='$BIND_HOST', port=$RELAY_PORT, log_level='info')
 " > "\$LOG" 2>&1 < /dev/null &
 echo \$! > "\$PIDFILE"
 disown
