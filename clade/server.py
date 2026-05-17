@@ -36,9 +36,10 @@ from aiohttp import web
 from clade import __version__
 from clade.audit import Audit
 from clade.envelope import Envelope
+from clade.outbox import Outbox, outbox_retry_loop
 from clade.peers_config import PeerEntry, PeersConfig
 from clade.thread_cache import ThreadCache, ThreadMsg
-from clade.transport.types import Response
+from clade.transport.types import DeliveryResult, Response
 from clade.transport.unix import UnixSocketTransport
 
 LOG = logging.getLogger("clade.serve")
@@ -61,6 +62,7 @@ class Server:
 
         # Resurse — sve se inicijalizuje u start(), zatvara u stop()
         self.audit: Audit | None = None
+        self.outbox: Outbox | None = None
         self.thread_cache = ThreadCache()
         self.unix_transport: UnixSocketTransport | None = None
         self.http_runner: web.AppRunner | None = None
@@ -87,7 +89,9 @@ class Server:
 
         assert self.me.audit_db is not None
         self.audit = Audit(self.me.audit_db)
-        LOG.info("audit db: %s", self.me.audit_db)
+        self.outbox = Outbox(self.audit)
+        LOG.info("audit db: %s (pending outbox: %d)",
+                 self.me.audit_db, self.outbox.pending_count())
 
         # Peer-to-peer unix socket listener
         assert self.me.socket is not None
@@ -101,6 +105,13 @@ class Server:
         # HTTP /health server (aiohttp)
         self.http_runner = await self._start_http_server()
         LOG.info("http /health: http://127.0.0.1:%d/health", self.me.http_port)
+
+        # Outbox retry loop u pozadini (v2 PR#3)
+        self._tasks.append(asyncio.create_task(
+            outbox_retry_loop(self.outbox, self._deliver_via_transport,
+                              self._shutdown_event, self.me_id),
+            name="outbox_retry",
+        ))
 
         # sd_notify integration (no-op ako ne tece pod systemd)
         notify_ready()
@@ -207,6 +218,8 @@ class Server:
 
     async def _http_health(self, _req: web.Request) -> web.Response:
         assert self.audit is not None
+        assert self.outbox is not None
+        outbox_stats = self.outbox.stats()
         body: dict[str, Any] = {
             "peer": self.me_id,
             "version": __version__,
@@ -216,9 +229,25 @@ class Server:
             "last_message_at_ms": self._metrics_last_msg_ts_ms,
             "thread_cache_size": self.thread_cache.size(),
             "audit_count": self.audit.count(),
+            "outbox_pending": outbox_stats["pending"],
+            "outbox_dead": outbox_stats["dead"],
             "socket": self.me.socket,
         }
         return web.json_response(body)
+
+    # ---- Transport dispatch (za outbox retry) ----
+
+    async def _deliver_via_transport(self, envelope: Envelope, to_url: str) -> DeliveryResult:
+        """Bira odgovarajuci transport na osnovu `to_url` schema-a.
+        - unix:// → UnixSocketTransport client mode
+        - http(s):// → HttpRemoteTransport (relay-mediated, dolazi u PR#4)
+
+        Trenutno samo unix; remote dolazi sa peers.yaml v2 schema-om."""
+        if to_url.startswith("unix://"):
+            client = UnixSocketTransport()
+            return await client.deliver(envelope, to_url=to_url)
+        # PR#4: HttpRemoteTransport ako transport=relay
+        return DeliveryResult(ok=False, error=f"unsupported to_url scheme: {to_url}")
 
     # ---- sd_notify watchdog ----
 

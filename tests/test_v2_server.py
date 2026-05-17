@@ -96,6 +96,9 @@ async def test_serve_health_endpoint(serve_proc):
     assert data["inbox_processed_total"] == 0
     assert data["thread_cache_size"] == 0
     assert "uptime_s" in data
+    # PR#3: outbox metrike u /health
+    assert data["outbox_pending"] == 0
+    assert data["outbox_dead"] == 0
 
 
 @pytest.mark.asyncio
