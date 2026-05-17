@@ -1,232 +1,239 @@
 # Clade Relay — Production Deploy (Faza 2)
 
-Step-by-step deploy na VPS sa TLS-om kroz Caddy + persistent Redis backend.
+Dve varijante deploy-a, biras prema network setup-u:
+
+| Varijanta | Kad | TLS | Domen | Caddy |
+|---|---|---|---|---|
+| **LAN/VPN** | Peer-ovi u istoj mrezi (npr. preko WireGuard) | NE (VPN enkriptuje) | NE (samo IP) | NE |
+| **Public VPS** | Peer-ovi na razlicitim kontinentima | DA (Let's Encrypt) | DA | DA |
 
 ---
 
-## Sta dobijas
+# Varijanta A — LAN/VPN deployment (najjednostavnija)
 
-- Relay javno dostupan na `https://clade.symappsys.com` (ili tvoj domen)
-- Automatski TLS preko Let's Encrypt (besplatno, auto-renewal)
-- Redis persistence (state preživljava restart relay-a)
-- Health check sa auto-restart kroz Docker
-- Caddy security headers (HSTS, no-cache, server fingerprint stripped)
-
----
+**Use case:** Dušan dolazi preko VPN-a do Predragovog api servera. Relay tece
+na api serveru ili na bilo kojoj masini u LAN-u. Saobracaj je vec enkriptovan
+na VPN sloju, pa nije potreban aplikacioni TLS. Bearer + HMAC ostaju aktivni
+(defense in depth).
 
 ## Preduslovi (KORISNIK radi)
 
-1. **VPS** — Hetzner CPX11 Frankfurt (2vCPU, 2GB RAM, €4.51/mesec)
-   - Alternativa: bilo koji VPS sa Docker support-om
-2. **Domen** — sub-domain pod tvojom kontrolom (npr. `clade.symappsys.com`)
-3. **DNS A record** koji pokazuje na VPS public IP — preko Cloudflare,
-   namecheap-a, ili sta vec koristis. **VAZNO:** Cloudflare proxy MORA
-   biti **isključen** (DNS only, "gray cloud") — TLS originira na Caddy-u,
-   ne hocemo dvostruko.
+1. **LAN ili VPN konekcija** izmedju svih peer masina (vec imas — WireGuard
+   ili OpenVPN tunel do api.katana-home.win)
+2. **Host masina** u toj mrezi sa Docker-om gde ce tece relay
+   - Moze biti api server, lokalna masina, ili posebna VM
+3. **Stabilan IP** te masine u LAN-u/VPN-u (npr. `10.0.0.5`)
 
----
+## Korak 1 — Setup host masine
 
-## Korak 1 — Provisioning VPS-a
+Na masini gde ce tece relay:
 
 ```bash
-# Sa lokalne masine (Hetzner CLI):
-hcloud server create \
-  --name clade-relay \
-  --type cpx11 \
-  --image debian-12 \
-  --location fsn1 \
-  --ssh-key <your-key-name>
-
-# Pribavi IP:
-hcloud server list
-# → koristis ovaj IP za DNS A record
-```
-
-Ili preko Hetzner Cloud web konzole — isti rezultat.
-
----
-
-## Korak 2 — Konfiguracija DNS-a
-
-U Cloudflare (ili tvoj DNS provider):
-
-```
-Type: A
-Name: clade
-Content: <VPS IP>
-Proxy status: DNS only (NE Proxied)
-TTL: Auto
-```
-
-Cekaj 5-15min da propagira. Provera:
-
-```bash
-dig +short clade.symappsys.com
-# → mora vratiti VPS IP, ne Cloudflare IP
-```
-
----
-
-## Korak 3 — Setup VPS-a (SSH)
-
-```bash
-ssh root@<VPS IP>
-
-# Install Docker
-apt update && apt install -y curl ca-certificates
+# Install Docker (ako vec nije)
 curl -fsSL https://get.docker.com | sh
 
-# Verify
-docker --version  # → Docker version 27.x
-docker compose version  # → Docker Compose version v2.x
-
-# Otvori firewall (UFW)
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 443/udp  # HTTP/3
-ufw --force enable
-```
-
----
-
-## Korak 4 — Deploy Clade-a
-
-```bash
-# Klon repo (ili kopiraj direktorijum)
+# Klon repo
 git clone <your-repo-url> /opt/clade
 cd /opt/clade
 
-# Generiši sveze tokene (sacuvaj output negde sigurno — to su secrets!)
+# Generiši sveze tokene
 ./scripts/gen-keys.sh > /tmp/clade-keys.txt
 cat /tmp/clade-keys.txt
-# → kopiraj sekciju "tokens.json" u deploy/tokens.json
-# → secrets iz alice-config.yaml + bob-config.yaml zapamti za peer masine
-
-# Kreiraj tokens.json u deploy/ direktorijumu
-# Format:
-# {
-#   "<token1>": "alice",
-#   "<token2>": "bob"
-# }
-nano deploy/tokens.json  # ili scp sa lokalne masine
+# Kopiraj sekciju "relay/tokens.json" u deploy/tokens.json:
+cat > deploy/tokens.json <<'EOF'
+{
+  "<alice-token>": "alice",
+  "<bob-token>": "bob"
+}
+EOF
 chmod 600 deploy/tokens.json
+```
 
-# Edituj Caddyfile da pokazuje na tvoj domen
-sed -i 's/clade.symappsys.com/<tvoj-domen>/g' deploy/Caddyfile
+## Korak 2 — Deploy stack-a
 
-# Start stack
+```bash
 cd deploy
-docker compose up -d
+docker compose -f docker-compose.lan.yml up -d
 
 # Verify
-docker compose ps
-docker compose logs -f relay
+docker compose -f docker-compose.lan.yml ps
+docker compose -f docker-compose.lan.yml logs -f relay
 # Treba da vidis:
 #   [store] connected to Redis at redis://redis:6379/0
 #   [relay] startup — loaded 2 tokens, store=RedisStore
 ```
 
----
+## Korak 3 — Restrikcija pristupa (preporuceno)
 
-## Korak 5 — Smoke test
+Ako relay slusa na svim interfejsima (`0.0.0.0:7777`), firewall ga ogranici samo
+na LAN/VPN:
 
-Sa **lokalne masine** (ili bilo gde):
+```bash
+# UFW (Debian/Ubuntu) — dozvoli samo iz LAN/VPN subneta
+ufw allow from 10.0.0.0/24 to any port 7777 proto tcp
+ufw deny 7777
+ufw enable
+
+# Ili — promeni docker-compose.lan.yml da slusa samo na VPN interface-u:
+# ports: ["10.0.0.5:7777:7777"]
+# (gde je 10.0.0.5 IP host masine u VPN-u)
+# pa restart: docker compose -f docker-compose.lan.yml up -d --force-recreate relay
+```
+
+## Korak 4 — Smoke test sa peer masine
+
+Sa lokalne masine (Dušan), preko VPN-a:
 
 ```bash
 # Health check
-curl https://clade.symappsys.com/health
-# Treba da vidis:
-# {"ok":true,"phase":2,"known_agents":["alice","bob"],...,"store":{"backend":"redis","redis_ok":true,...}}
+curl http://10.0.0.5:7777/health
+# {"ok":true,"phase":2,"known_agents":["alice","bob"],...,"store":{"backend":"redis",...}}
 
-# Probaj send sa pogresnim token-om
-curl -X POST https://clade.symappsys.com/send -H "Content-Type: application/json" \
-  -H "Authorization: Bearer BAD" -d '{}'
-# → 401 Unauthorized
-
-# Probaj send sa pravim Alice token-om (ali nepotpunim envelope-om)
-curl -X POST https://clade.symappsys.com/send -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <alice-token-iz-tokens.json>" \
-  -d '{"msg_id":"x","from_agent":"alice","to_agent":"bob","kind":"send","payload":{},"nonce":"test1","timestamp_ms":'$(date +%s%3N)',"hmac":"x"}'
-# → 200 ok (HMAC se ne validira na relay strani — to je E2E)
+# Sa pravim bearer token-om (smoke test, HMAC random — relay nece odbiti)
+curl -X POST http://10.0.0.5:7777/send -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <alice-token>" \
+  -d "{\"msg_id\":\"x\",\"from_agent\":\"alice\",\"to_agent\":\"bob\",\"kind\":\"send\",\"payload\":{},\"nonce\":\"smoke-$(date +%s)\",\"timestamp_ms\":$(date +%s%3N),\"hmac\":\"x\"}"
+# {"ok":true,"msg_id":"x"}
 ```
 
----
+## Korak 5 — Agent config update
 
-## Korak 6 — Agent na lokalnoj masini (peer setup)
+Na svakoj peer masini, edituj agent config da pokazuje na LAN IP:
 
-Posle relay deploy-a, na tvojoj devel masini (a kasnije na Predragovom serveru):
-
-```bash
-# Update agent config da pokazuje na produkciju
-# examples/alice-config.yaml:
-cat > ~/.clade/alice-config.yaml <<'YAML'
+```yaml
+# ~/.clade/alice-config.yaml
 my_id: alice
-relay_url: https://clade.symappsys.com
+relay_url: http://10.0.0.5:7777    # ← LAN IP, ne localhost
 bearer_token: <iz tokens.json za alice>
 peers:
-  bob: <ISTI shared secret kao u bob-config.yaml>
-audit_db: ~/.clade/audit.db
-YAML
-chmod 600 ~/.clade/alice-config.yaml
+  bob: <ISTI shared secret kao kod bob-a>
+audit_db: ~/.clade/alice-audit.db
+```
 
-# Probaj
-cd /home/dusan/project/a2a
-CLADE_CONFIG=~/.clade/alice-config.yaml .venv/bin/python -c "
-import asyncio, sys
-sys.path.insert(0, '.')
-from agent.main import _make_envelope, _auth_headers, cfg
-import httpx
-async def main():
-    env = _make_envelope('send', 'bob', {'text': 'ping from local'})
-    async with httpx.AsyncClient() as c:
-        r = await c.post(f'{cfg.relay_url}/send', json=env, headers=_auth_headers(), timeout=10)
-    print(r.status_code, r.text)
-asyncio.run(main())
-"
-# → 200 ok
+Onda update `examples/mcp-config-alice.json` da koristi taj config:
+
+```json
+{
+  "mcpServers": {
+    "clade": {
+      "command": "/opt/clade/.venv/bin/python",
+      "args": ["/opt/clade/agent/main.py"],
+      "env": {
+        "CLADE_CONFIG": "/home/<user>/.clade/alice-config.yaml"
+      }
+    }
+  }
+}
 ```
 
 ---
 
-## Korak 7 — Predrag agent (kad bude vreme)
+# Varijanta B — Public VPS deployment (TLS + domen)
 
-Iste komande, samo:
-- Drugi config (bob-config.yaml) i drugi bearer_token
-- Pokrece se na njegovom api serveru gde Claude Code MCP server moze da ga spawn-uje
-- ISTI shared HMAC secret kao u alice-config.yaml (to je shared secret pair)
+**Use case:** Peer-ovi su na razlicitim mrezama bez zajednickog VPN-a. Treba
+ti javni endpoint koji moze niko da pogodi (osim sa validnim Bearer-om).
+
+## Preduslovi
+
+1. VPS (npr. Hetzner CPX11 Frankfurt, €4.51/mesec)
+2. Sub-domen pod tvojom kontrolom (npr. `clade.symappsys.com`)
+3. DNS A record → VPS IP (**Cloudflare: gray cloud / DNS only**, nikako proxied)
+
+## Korak 1 — Provisioning + DNS
+
+```bash
+# Hetzner CLI:
+hcloud server create --name clade-relay --type cpx11 --image debian-12 \
+  --location fsn1 --ssh-key <your-key>
+hcloud server list  # pribavi IP
+```
+
+U Cloudflare-u: A record `clade` → `<VPS IP>`, Proxy = **DNS only**.
+
+```bash
+dig +short clade.symappsys.com  # → mora vratiti VPS IP, ne Cloudflare
+```
+
+## Korak 2 — Docker + firewall
+
+```bash
+ssh root@<VPS IP>
+apt update && apt install -y curl ca-certificates
+curl -fsSL https://get.docker.com | sh
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp
+ufw --force enable
+```
+
+## Korak 3 — Deploy
+
+```bash
+git clone <your-repo-url> /opt/clade
+cd /opt/clade
+
+./scripts/gen-keys.sh > /tmp/clade-keys.txt
+# Kopiraj sekciju "relay/tokens.json" u deploy/tokens.json:
+nano deploy/tokens.json
+chmod 600 deploy/tokens.json
+
+# Edituj Caddyfile da pokazuje na tvoj domen:
+sed -i 's/clade.symappsys.com/<your-domain>/g' deploy/Caddyfile
+
+cd deploy
+docker compose up -d  # koristi docker-compose.yml (sa Caddy-jem)
+
+# Caddy ce automatski uzeti Let's Encrypt cert za <your-domain>
+# Prvi put moze potrajati 30-60s
+```
+
+## Korak 4 — Smoke test
+
+```bash
+curl https://<your-domain>/health
+# {"ok":true,"phase":2,...,"store":{"backend":"redis","redis_ok":true,...}}
+```
+
+## Korak 5 — Agent config
+
+Isti kao LAN varijanta, samo `relay_url: https://<your-domain>` umesto IP-a.
 
 ---
 
-## Operativno
+# Operativno (oba deploy-a)
 
 ### Update relay-a posle code change-a
 
 ```bash
-ssh root@<VPS>
+ssh root@<host>
 cd /opt/clade
 git pull
 cd deploy
 docker compose build relay
-docker compose up -d relay
+docker compose up -d relay      # public varijanta
+# ILI:
+docker compose -f docker-compose.lan.yml up -d relay   # LAN varijanta
 ```
 
 ### Rotacija token-a
 
 ```bash
-# Lokalno
+# Lokalno (na DEVELOPER masini, ne na VPS-u):
 ./scripts/gen-keys.sh > /tmp/new-keys.txt
-# Edituj /opt/clade/deploy/tokens.json sa novim mapping-om
-# Distribuiraj nove tokene + secrets peer-ovima van-kanalno (NE preko mejla)
-# Restart relay-a:
+
+# Edituj deploy/tokens.json sa novim mapping-om (mogu paralelno da postoje
+# stari + novi tokeni dok ne distribuiras nove svim peer-ovima)
+scp deploy/tokens.json root@<host>:/opt/clade/deploy/tokens.json
+
+# Restart relay (Redis state se cuva — inbox-i ostaju, nonce cache se brise
+# ali za to je 5min TTL pa nije bitno):
 docker compose restart relay
+
+# Distribuiraj nove tokene + HMAC secrets peer-ovima VAN-KANALNO
+# (ne preko mejla, koristi Signal/in person/itd)
 ```
 
 ### Backup Redis-a
 
 ```bash
-# Redis ima auto-snapshot na 60s ako se 1 kljuc promenio (--save 60 1)
-# + appendonly file (AOF). Backup volume:
 docker run --rm -v deploy_redis-data:/data -v /tmp:/backup alpine \
   tar czf /backup/redis-backup-$(date +%F).tar.gz -C /data .
 ```
@@ -235,42 +242,52 @@ docker run --rm -v deploy_redis-data:/data -v /tmp:/backup alpine \
 
 ```bash
 # Logs (tail):
-docker compose logs -f --tail=100
+docker compose logs -f --tail=100 relay
 
-# Metrike:
-curl https://clade.symappsys.com/health | jq
+# Health + metrike:
+curl http://<host>:7777/health | python3 -m json.tool      # LAN
+curl https://<domain>/health | python3 -m json.tool        # Public
 
-# Audit:
-curl https://clade.symappsys.com/audit -H "Authorization: Bearer <any-valid-token>" | jq
+# Audit (samo authenticated agent-i mogu citati):
+curl http://<host>:7777/audit -H "Authorization: Bearer <token>" | python3 -m json.tool
 ```
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-**TLS ne radi prvi put** — Caddy ne moze da dobije Let's Encrypt cert ako DNS jos nije propagiran. Sacekaj 15min, restart `docker compose restart caddy`.
+**TLS ne radi prvi put (Public)** — Caddy ne moze da dobije Let's Encrypt cert
+ako DNS jos nije propagiran. Sacekaj 15min:
+```bash
+docker compose logs caddy | grep -i "obtaining"
+docker compose restart caddy
+```
 
 **Relay ne moze do Redis-a** — proveri:
 ```bash
 docker compose logs redis
 docker compose exec redis redis-cli ping
+docker compose exec relay env | grep REDIS_URL
 ```
 
-**Replay rejection neocekivano** — moguci uzrok je clock skew izmedju peer-a i VPS-a (>5min). Postavi NTP na obe masine:
+**Replay rejection neocekivano** — clock skew izmedju peer-a i host-a (>5min).
+Postavi NTP:
 ```bash
 timedatectl status
 systemctl enable --now systemd-timesyncd
 ```
 
-**Inbox full** — INBOX_MAX = 1000 po agent-u. Ako stigne tu, peer ne polluje
-dovoljno cesto. Resenje: polluj cesce, ili povecaj INBOX_MAX u `relay/main.py`.
+**Inbox full (503)** — INBOX_MAX = 1000 po agent-u. Peer ne polluje dovoljno
+cesto. Resenje: dodaj CLAUDE.md instrukciju da polluje cesce, ili povecaj
+INBOX_MAX u `relay/main.py`.
+
+**LAN deploy: agent ne vidi relay** — proveri firewall + da li je relay
+bound na pravi interface (`docker compose exec relay ss -tlnp`).
 
 ---
 
-## Sledeci korak (Faza 3)
+# Sledeci korak (Faza 3)
 
-- Predrag pokrene "katana" agenta na api serveru sa skriptom iz Korak 7
+- Predrag pokrene "katana" agenta na api serveru sa skriptom iz Korak 5
 - End-to-end test: Frontend-Claude pita Katana-Claude "koliko ABA igraca u staging-u"
-- CLAUDE.md na strani Katana-Claude-a sa scope-om (read-only DB, roadmap doc)
-
-Vidi root `README.md` za detaljnu Faza 3 listu.
+- CLAUDE.md za Katana-Claude sa scope-om (read-only DB pristup, roadmap doc itd.)

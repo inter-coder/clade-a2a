@@ -1,0 +1,46 @@
+# Clade Relay — LAN/VPN deployment (bez TLS, bez domena, samo IP)
+#
+# Use case: relay tece na masini u LAN-u/VPN-u (npr. api server kod Predraga
+# kome se Dušan dolazi preko WireGuard/OpenVPN tunela). Saobracaj je vec
+# enkriptovan na VPN sloju, pa TLS na aplikacionom sloju nije strogo
+# potreban. Bearer + HMAC + nonce su i dalje aktivni (defense in depth —
+# ako VPN bude kompromitovan ili dodjes na drugi peer-network).
+#
+# Deploy: cd deploy && docker compose -f docker-compose.lan.yml up -d
+# Stop:   docker compose -f docker-compose.lan.yml down
+# Logs:   docker compose -f docker-compose.lan.yml logs -f relay
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./tokens.json:/app/relay/tokens.json:ro
+    ports:
+      # Direktno expose-uje relay na host:7777 — slusa na svim interface-ima.
+      # AKO ne zelis spoljnji pristup (samo localhost): "127.0.0.1:7777:7777"
+      # AKO zelis samo na specificnom interface-u (npr. VPN tun0):
+      #   "10.0.0.1:7777:7777" gde je 10.0.0.1 LAN/VPN IP host masine
+      - "7777:7777"
+
+volumes:
+  redis-data:

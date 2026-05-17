@@ -105,20 +105,29 @@ token rotation CLI (manual rotacija OK za 2-3 peer-a).
 
 ### Faza 2 — Deployment ✓ (artefakti, 2026-05-17)
 
-- [x] Redis u relay docker compose (`relay/store.py` + `RedisStore`,
-  graceful fallback na InMemory ako REDIS_URL nije setovan)
-- [x] Caddy + Let's Encrypt konfiguracija (`deploy/Caddyfile`)
-- [x] systemd unit template za agent (`deploy/systemd/clade-agent.service`)
-- [x] Dockerfile (multi-stage, healthcheck, slim image)
-- [x] docker-compose stack (relay + redis + caddy, secrets kao volume mount)
+Dve deploy varijante za razlicite use case-ove:
+
+| Varijanta | Use case | TLS | Compose fajl |
+|---|---|---|---|
+| **LAN/VPN** | Peer-ovi u istoj mrezi (npr. WireGuard) | NE (VPN enkriptuje) | `deploy/docker-compose.lan.yml` |
+| **Public VPS** | Peer-ovi razdvojeni internetom | DA (Let's Encrypt) | `deploy/docker-compose.yml` + Caddy |
+
+Code:
+- [x] Redis backend (`relay/store.py` + `RedisStore`, graceful fallback na InMemory)
 - [x] /health endpoint vraca store backend + redis_ok flag
-- [x] `deploy/DEPLOY.md` — 7 koraka VPS deploy (provisioning, DNS, Docker,
-  Caddyfile edit, tokens.json setup, smoke test, agent setup)
+
+Artefakti:
+- [x] `relay/Dockerfile` (Python 3.13-slim, healthcheck)
+- [x] `deploy/docker-compose.yml` — Public stack (relay + redis + caddy)
+- [x] `deploy/docker-compose.lan.yml` — LAN stack (relay + redis, no caddy)
+- [x] `deploy/Caddyfile` (samo za public varijantu, Let's Encrypt automatski)
+- [x] `deploy/systemd/clade-agent.service` template
+- [x] `deploy/DEPLOY.md` — obe varijante step-by-step, troubleshooting
 
 PENDING (korisnik radi):
-- [ ] Hetzner CPX11 Frankfurt provisioning (€4.51/mesec)
-- [ ] Cloudflare DNS A record (gray cloud / DNS only)
-- [ ] Stvarni deploy + smoke test sa pravim TLS-om
+- [ ] LAN: pokrenuti `docker compose -f docker-compose.lan.yml up -d` na
+  host masini u LAN-u/VPN-u (api server ili odvojena masina)
+- [ ] ILI Public: VPS provisioning + DNS + deploy
 
 Lokalni dev (in-memory) i dalje radi nepromenjeno — REDIS_URL nije setovan,
 fallback je transparentan.
