@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clade-a2a"
-version = "0.8.0"
+version = "1.0.0rc1"
 description = "Agent-to-Agent (A2A) communication system for Claude Code instances — Bearer/HMAC-secured MCP relay with stdio peer agents"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -28,6 +28,7 @@ dependencies = [
     "uvicorn>=0.30",
     "pydantic>=2.0",
     "redis>=5.0",
+    "aiohttp>=3.9",   # v2.0: clade serve /health endpoint
 ]
 
 [project.optional-dependencies]
@@ -37,12 +38,11 @@ test = [
 ]
 
 [project.scripts]
-clade-relay = "relay.main:main"
-clade-agent = "agent.main:main"
-clade-init = "clade_cli.init:main"
+clade = "clade.server:main"
+clade-relay = "relay.main:main"   # za --remote cross-host scenario
 
 [tool.hatch.build.targets.wheel]
-packages = ["relay", "agent", "clade_cli"]
+packages = ["relay", "clade"]
 include = ["relay/ui/*.html"]
 
 [tool.hatch.build.targets.wheel.force-include]

@@ -18,7 +18,6 @@ from typing import Any
 
 import httpx
 import pytest
-import yaml
 
 ROOT = Path(__file__).parent.parent
 PY = str(ROOT / ".venv" / "bin" / "python")
@@ -133,40 +132,6 @@ uvicorn.run(relay.main.app, host='127.0.0.1', port={relay_port}, log_level='warn
         proc.kill()
 
 
-@pytest.fixture
-def alice_config(
-    workdir: Path,
-    relay_url: str,
-    token_for_alice: str,
-    shared_secret: str,
-) -> Path:
-    """Per-test alice config sa sopstvenom audit DB."""
-    cfg = workdir / "alice-config.yaml"
-    audit_db = workdir / f"alice-{os.getpid()}-{time.time_ns()}-audit.db"
-    cfg.write_text(yaml.dump({
-        "my_id": "alice",
-        "relay_url": relay_url,
-        "bearer_token": token_for_alice,
-        "peers": {"bob": shared_secret},
-        "audit_db": str(audit_db),
-    }))
-    return cfg
-
-
-@pytest.fixture
-def bob_config(
-    workdir: Path,
-    relay_url: str,
-    token_for_bob: str,
-    shared_secret: str,
-) -> Path:
-    cfg = workdir / "bob-config.yaml"
-    audit_db = workdir / f"bob-{os.getpid()}-{time.time_ns()}-audit.db"
-    cfg.write_text(yaml.dump({
-        "my_id": "bob",
-        "relay_url": relay_url,
-        "bearer_token": token_for_bob,
-        "peers": {"alice": shared_secret},
-        "audit_db": str(audit_db),
-    }))
-    return cfg
+# Note: alice_config/bob_config fixture-i (v1 agent) uklonjeni u PR#5 cleanup-u.
+# v2 testovi koriste sopstvene tmp_path / fastmcp.Client setup-e (vidi
+# tests/test_v2_*.py); relay testovi koriste samo gornje token + relay_url fixture.
