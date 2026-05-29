@@ -322,6 +322,30 @@ def create_app(state: AppState) -> FastAPI:
         tmpl = env.get_template("start.sh.j2")
         return tmpl.render(peer=peer, setup=setup)
 
+    @app.get("/agent/{token}/chat", response_class=PlainTextResponse)
+    async def chat_script(token: str) -> str:
+        peer, setup = _find_peer_by_token(state, token)
+        # Pick a sample "other" peer for the prompt hint
+        others = [p for p in setup.peers.values() if p.peer_id != peer.peer_id]
+        other_sample_name = others[0].display_name if others else "<peer>"
+        tmpl = env.get_template("chat.sh.j2")
+        return tmpl.render(
+            peer=peer, setup=setup,
+            public_url_base=state.public_url_base,
+            other_sample_name=other_sample_name,
+        )
+
+    @app.get("/agent/{token}/mcp-config", response_class=PlainTextResponse)
+    async def mcp_config(token: str) -> str:
+        peer, _setup = _find_peer_by_token(state, token)
+        tmpl = env.get_template("mcp-config.json.j2")
+        return tmpl.render(
+            peer=peer,
+            clade_python="/opt/clade-a2a/.venv/bin/python",
+            clade_repo_dir="/opt/clade-a2a",
+            agent_dir="$HOME/clade-agent",
+        )
+
     # --- Health ---
 
     @app.get("/health")

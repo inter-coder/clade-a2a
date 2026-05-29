@@ -1,0 +1,47 @@
+#!/bin/bash
+# Clade A2A — Interactive Claude session for peer '{{ peer.peer_id }}' ({{ peer.display_name }}).
+#
+# Opens 'claude' in a workdir with .mcp.json pointing to the clade agent.
+# In the prompt, talk naturally:
+#
+#   > Ask {{ other_sample_name }} how much 7 times 8 is
+#   > Tell {{ other_sample_name }} the deploy is done
+#
+# Claude maps natural language to clade_ask / clade_send automatically.
+
+set -e
+
+cd "$(dirname "$0")"
+AGENT_DIR="$(pwd)"
+WORKDIR="$AGENT_DIR/workdir-{{ peer.peer_id }}"
+
+if ! command -v claude > /dev/null; then
+  echo "Error: 'claude' command not found in PATH"
+  echo "Install Claude Code first: https://docs.claude.com/claude-code"
+  exit 1
+fi
+
+if [[ ! -d "$WORKDIR" ]]; then
+  echo "Error: workdir not found at $WORKDIR"
+  echo "Re-run install: curl -fsSL {{ public_url_base }}/agent/{{ peer.download_token }}/install | bash"
+  exit 1
+fi
+
+if [[ ! -f "$WORKDIR/.mcp.json" ]]; then
+  echo "Error: .mcp.json not found at $WORKDIR/.mcp.json"
+  echo "Re-run install to regenerate."
+  exit 1
+fi
+
+# Optional sanity: daemon running?
+if [[ ! -f "$AGENT_DIR/{{ peer.peer_id }}.pid" ]]; then
+  echo "Warning: daemon doesn't appear to be running (no PID file)."
+  echo "Start it first in another terminal: $AGENT_DIR/start.sh --yolo"
+  echo ""
+fi
+
+cd "$WORKDIR"
+echo "Opening Claude in $WORKDIR..."
+echo "MCP server 'clade' will auto-discover via .mcp.json"
+echo ""
+exec claude

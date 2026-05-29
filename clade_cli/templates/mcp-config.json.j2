@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "clade": {
+      "command": "{{ clade_python }}",
+      "args": ["{{ clade_repo_dir }}/agent/main.py"],
+      "env": {
+        "CLADE_CONFIG": "{{ agent_dir }}/{{ peer.peer_id }}.yaml"
+      }
+    }
+  }
+}

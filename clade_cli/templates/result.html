@@ -258,9 +258,11 @@
           <code id="cmd-{{ peer_id }}">curl -fsSL {{ public_url_base }}/agent/{{ peer.download_token }}/install | bash</code>
         </div>
         <div class="links">
-          <a href="/agent/{{ peer.download_token }}/install" target="_blank">View install.sh</a>
-          <a href="/agent/{{ peer.download_token }}/config" target="_blank">View {{ peer.peer_id }}.yaml</a>
-          <a href="/agent/{{ peer.download_token }}/start" target="_blank">View start.sh</a>
+          <a href="/agent/{{ peer.download_token }}/install" target="_blank">install.sh</a>
+          <a href="/agent/{{ peer.download_token }}/config" target="_blank">{{ peer.peer_id }}.yaml</a>
+          <a href="/agent/{{ peer.download_token }}/start" target="_blank">start.sh</a>
+          <a href="/agent/{{ peer.download_token }}/chat" target="_blank">chat.sh</a>
+          <a href="/agent/{{ peer.download_token }}/mcp-config" target="_blank">.mcp.json</a>
         </div>
       </div>
       {% endfor %}

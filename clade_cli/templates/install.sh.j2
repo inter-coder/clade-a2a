@@ -89,6 +89,19 @@ curl -fsSL -o "start.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/start"
 chmod +x "start.sh"
 ok "Downloaded start.sh"
 
+curl -fsSL -o "chat.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/chat"
+chmod +x "chat.sh"
+ok "Downloaded chat.sh"
+
+# Create workdir with .mcp.json so Claude Code auto-discovers the agent
+mkdir -p "workdir-${PEER_ID}"
+curl -fsSL -o "workdir-${PEER_ID}/.mcp.json" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/mcp-config"
+
+# Substitute $HOME placeholder so the path is concrete on this machine
+sed -i.bak "s|\\$HOME/clade-agent|$AGENT_DIR|g" "workdir-${PEER_ID}/.mcp.json"
+rm -f "workdir-${PEER_ID}/.mcp.json.bak"
+ok "Created workdir-${PEER_ID}/ with .mcp.json"
+
 # --- Sanity check: can we reach the relay? ---
 info "Verifying relay reachability..."
 if curl -sf --max-time 5 "${RELAY_URL}/health" > /dev/null; then
@@ -106,11 +119,15 @@ echo "  Display name:   $DISPLAY_NAME"
 echo "  Config:         $AGENT_DIR/${PEER_ID}.yaml"
 echo "  Relay:          $RELAY_URL"
 echo ""
-echo -e "${BOLD}Start the agent:${NC}"
+echo -e "${BOLD}Two terminals on this machine:${NC}"
 echo ""
-echo "  $AGENT_DIR/start.sh           # safe mode"
-echo "  $AGENT_DIR/start.sh --yolo    # skip permission prompts (for tool use)"
+echo "  Terminal 1 (always-on daemon, auto-replies to incoming questions):"
+echo "    $AGENT_DIR/start.sh --yolo"
 echo ""
-echo "The daemon will poll the relay every 2s and auto-reply to questions"
-echo "from other peers via 'claude --print'. Press Ctrl+C to stop."
+echo "  Terminal 2 (when YOU want to send/ask other peers):"
+echo "    $AGENT_DIR/chat.sh"
+echo "    # In Claude prompt: 'Ask <other-peer-name> ...'"
+echo ""
+echo "The daemon polls the relay every 2s and auto-replies via 'claude --print'."
+echo "chat.sh opens an interactive Claude session with clade_* MCP tools available."
 echo ""
