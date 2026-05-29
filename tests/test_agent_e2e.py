@@ -399,3 +399,97 @@ def test_daemon_extract_question_handles_all_payload_shapes():
     assert _extract_question({}) == "(prazno pitanje)"
     # Non-dict, non-None
     assert _extract_question("raw string") == "raw string"
+
+
+# ---- v1.3.0 tests: name + role + PeerInfo schema ----
+
+
+def test_config_with_name_role_and_peer_info(tmp_path):
+    """Config sa novim v1.3.0 poljima parse-uje + helperi rade."""
+    cfg_path = tmp_path / "test.yaml"
+    cfg_path.write_text("""
+my_id: marko-dev
+name: Marko Markovic
+role: |
+  Ti si frontend developer u SDS timu.
+  Specijalnost: React, TypeScript.
+bearer_token: tk
+peers:
+  bob:
+    secret: deadbeef
+    name: Bob Bobic
+    role: Backend dev
+audit_db: /tmp/test.db
+""")
+    main = _load_agent_module(cfg_path)
+    assert main.cfg.my_id == "marko-dev"
+    assert main.cfg.name == "Marko Markovic"
+    assert "frontend developer" in main.cfg.role
+    pi = main.cfg.peer_info("bob")
+    assert pi is not None
+    assert pi.name == "Bob Bobic"
+    assert pi.role == "Backend dev"
+    assert main.cfg.peer_secret("bob") == "deadbeef"
+
+
+def test_config_legacy_peers_string_format_still_works(tmp_path):
+    """Stari format yaml (peers: id → secret string) i dalje parse-uje."""
+    cfg_path = tmp_path / "legacy.yaml"
+    cfg_path.write_text("""
+my_id: alice
+bearer_token: tk
+peers:
+  bob: deadbeef
+audit_db: /tmp/test.db
+""")
+    main = _load_agent_module(cfg_path)
+    assert main.cfg.peer_secret("bob") == "deadbeef"
+    assert main.cfg.peer_info("bob") is None  # stari format
+    assert main.cfg.name is None  # default
+    assert main.cfg.role is None  # default
+
+
+@pytest.mark.asyncio
+async def test_daemon_call_claude_includes_role_in_prompt(monkeypatch, tmp_path):
+    """call_claude sa role kao kwarg ubacuje TVOJA ULOGA blok u system prompt."""
+    import sys as _sys
+    _sys.modules.pop("agent.main", None)
+    _sys.modules.pop("agent.daemon", None)
+
+    # Trebamo neki dummy config za agent.main import
+    dummy_cfg = tmp_path / "dummy.yaml"
+    dummy_cfg.write_text("my_id: x\nbearer_token: tk\npeers: {}\naudit_db: /tmp/x.db\n")
+    os.environ["CLADE_CONFIG"] = str(dummy_cfg)
+
+    from agent.daemon import call_claude  # noqa: PLC0415
+
+    captured_args = []
+
+    async def fake_subprocess_exec(*args, **kwargs):
+        captured_args.extend(args)
+
+        class FakeProc:
+            returncode = 0
+            async def communicate(self):
+                return (b"OK", b"")
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    await call_claude(
+        question="Sta je?", dangerous=False, workdir=tmp_path,
+        from_peer="bob", my_id="alice",
+        name="Alice Smith", role="Ti si data analyst, fokus na SQL.",
+        from_peer_name="Bob Bobic", from_peer_role="Backend dev",
+    )
+
+    # --append-system-prompt ide kao arg posle --print
+    args_list = list(captured_args)
+    sys_prompt_idx = args_list.index("--append-system-prompt") + 1
+    prompt = args_list[sys_prompt_idx]
+
+    assert "KO SI TI" in prompt
+    assert "Alice Smith" in prompt
+    assert "data analyst" in prompt
+    assert "Bob Bobic" in prompt
+    assert "Backend dev" in prompt

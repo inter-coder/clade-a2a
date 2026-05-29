@@ -202,7 +202,12 @@ def banner(msg: str) -> None:
 
 async def call_claude(question: str, dangerous: bool, workdir: Path,
                        from_peer: str, my_id: str,
-                       thread_context: str = "") -> str:
+                       thread_context: str = "",
+                       *,
+                       name: str | None = None,
+                       role: str | None = None,
+                       from_peer_name: str | None = None,
+                       from_peer_role: str | None = None) -> str:
     """Spawn `claude --print` da izracuna odgovor na peer-ovo pitanje.
 
     Workdir kontrolise koji CLAUDE.md i .mcp.json se ucitavaju — ali za
@@ -211,21 +216,52 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
 
     thread_context: opcioni text iz format_thread_for_prompt() — istorija
     prethodnih poruka u istom threadu. Daje Claude-u "memoriju" izmedju
-    asks u istom logickom razgovoru."""
-    base = (
-        f"Ti si '{my_id}' agent u Clade A2A sistemu (protokol v1.2.0). "
-        f"Drugi peer agent '{from_peer}' ti je upravo postavio pitanje. "
-        f"Odgovori sazeto, tacno, u jednoj-dve recenice. "
+    asks u istom logickom razgovoru.
+
+    name + role (v1.3.0): identifikacija + system prompt opisuje TI si KO.
+    Ako je dat role — prepend kao primary kontekst (pred sve ostalo). Ime
+    zameni generic my_id u self-reference."""
+    display_self = name or my_id
+    display_peer = from_peer_name or from_peer
+
+    sections: list[str] = []
+
+    # 1) ROLE blok — najveca tezina, prvo u kontekstu
+    if role and role.strip():
+        sections.append(
+            f"=== KO SI TI ===\n"
+            f"Ime: {display_self}"
+            + (f" (tehnicki ID: {my_id})" if name and name != my_id else "")
+            + f"\n\n{role.strip()}\n=== KRAJ ===\n"
+        )
+
+    # 2) Ko te pita
+    peer_intro = f"Drugi peer agent '{display_peer}'"
+    if from_peer_role and from_peer_role.strip():
+        peer_intro += f" ({from_peer_role.strip()[:120]})"
+    sections.append(
+        f"{peer_intro} ti je upravo postavio pitanje. "
+        f"Odgovori u skladu sa svojom ulogom, sazeto i tacno. "
         f"Ako ne znas odgovor, kazi to direktno — ne izmisljaj. "
-        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas drugog peer-a, "
+        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas treceg peer-a, "
         f"ali izbegavaj — preferiraj direktan odgovor.\n\n"
         f"AKO pitanje je dvosmisleno ili fali kontekst koji ti treba da odgovoris, "
-        f"zapocni svoj odgovor sa marker-om `[CLARIFY]` i postavi clarify pitanje "
-        f"(primer: `[CLARIFY] Koja tabela tacno? U staging ili prod DB?`). "
+        f"zapocni svoj odgovor sa marker-om `[CLARIFY]` i postavi clarify pitanje. "
         f"Daemon ce taj odgovor oznaciti kao clarify i interactive Claude na drugoj "
-        f"strani ce ga prikazati korisniku umesto da ga obrade kao finalni odgovor."
+        f"strani ce ga prikazati korisniku."
     )
-    system_prompt = f"{base}\n\n{thread_context}" if thread_context else base
+
+    # 3) Thread continuity (ako ima istorije)
+    if thread_context:
+        sections.append(thread_context)
+
+    # Fallback ako nemamo role: zadrzi v1.2.0-style generic self-id
+    if not role:
+        sections.insert(0,
+            f"Ti si '{display_self}' agent u Clade A2A sistemu (protokol v1.3.0)."
+        )
+
+    system_prompt = "\n\n".join(sections)
 
     # Defense: nikad ne smemo prosledjivati None u args (TypeError u fork_exec).
     safe_question = question if question else "(prazno pitanje od peer-a)"
@@ -273,7 +309,7 @@ async def send_reply(correlation_id: str, response: dict[str, Any],
                       record_thread_fn=None) -> bool:
     """Konstrui + potpisi reply envelope, posalji relay-u.
     Ako record_thread_fn dat i response ima _thread_id, record-ujemo outbound."""
-    secret = cfg.peers[to]
+    secret = cfg.peer_secret(to) or ""
     msg_id = str(uuid.uuid4())
     nonce = secrets.token_hex(16)
     ts_ms = int(time.time() * 1000)
@@ -341,7 +377,14 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
         log(f"{DIM}  ⏳ computing reply via claude --print{' --yolo' if dangerous else ''}...{RESET}", "")
 
         t0 = time.time()
-        answer = await call_claude(question, dangerous, workdir, from_agent, cfg.my_id, thread_context)
+        # v1.3.0: name + role iz config + per-peer info (ako PeerInfo schema)
+        peer_info = cfg.peer_info(from_agent)
+        answer = await call_claude(
+            question, dangerous, workdir, from_agent, cfg.my_id, thread_context,
+            name=cfg.name, role=cfg.role,
+            from_peer_name=peer_info.name if peer_info else None,
+            from_peer_role=peer_info.role if peer_info else None,
+        )
         elapsed = time.time() - t0
 
         # Truncate prikaza za log (full answer ide u reply)
@@ -463,7 +506,7 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                             log(f"{RED}? msg from unknown peer '{peer}' — ignorisem{RESET}", "")
                             audit_log_fn("rejected", env.get("msg_id"), peer, env.get("kind"), "unknown_peer")
                             continue
-                        if not verify_fn(cfg.peers[peer], env):
+                        if not verify_fn(cfg.peer_secret(peer) or "", env):
                             log(f"{RED}? msg from {peer} HMAC failed — ignorisem (mozda tampered/MITM){RESET}", "")
                             audit_log_fn("rejected", env.get("msg_id"), peer, env.get("kind"), "bad_hmac")
                             continue
