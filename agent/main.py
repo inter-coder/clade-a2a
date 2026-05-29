@@ -43,23 +43,28 @@ from agent import outbox  # noqa: E402
 # ---- Config ----
 
 class PeerInfo(BaseModel):
-    """Sta znamo o drugom peer-u (display + role summary)."""
-    secret: str  # shared HMAC hex (obavezno za pair-wise verifikaciju)
-    name: str | None = None  # display ime (npr. "Marko Markovic")
-    role: str | None = None  # role summary (kratak opis za interactive Claude)
+    """What we know about another peer (display + role + workdir).
+
+    v1.5.0 adds `workdir` so any agent can discover where each peer's project
+    lives — supports the directory protocol (clade_list_peers MCP tool)."""
+    secret: str  # shared HMAC hex (required for pair-wise verification)
+    name: str | None = None  # display name (e.g. "Marko Markovic")
+    role: str | None = None  # role summary (short description for interactive Claude)
+    workdir: str | None = None  # peer's working directory (informational, v1.5.0+)
 
 
 class Config(BaseModel):
-    """Per-agent config (v1.3.0+ ima name + role + per-peer info).
+    """Per-agent config (v1.3.0+ has name + role + per-peer info; v1.5.0 adds workdir).
 
-    Backward compat: peers moze biti dict[str, str] (stari format gde value je
-    samo HMAC secret) ILI dict[str, dict] (novi format sa name/role)."""
+    Backward compat: peers can be dict[str, str] (old format, value is just the
+    HMAC secret) OR dict[str, dict] (new format with name/role/workdir)."""
     my_id: str
-    name: str | None = None  # display ime (npr. "Marko Markovic"); default = my_id
-    role: str | None = None  # multi-line system prompt opisuje ulogu (v1.3.0+)
+    name: str | None = None  # display name; default = my_id
+    role: str | None = None  # multi-line system prompt describing role (v1.3.0+)
+    workdir: str | None = None  # this agent's project directory (v1.5.0+)
     relay_url: str = "http://localhost:7777"
     bearer_token: str
-    peers: dict[str, str | PeerInfo] = Field(default_factory=dict)  # peer_id → secret ili PeerInfo
+    peers: dict[str, str | PeerInfo] = Field(default_factory=dict)  # peer_id → secret or PeerInfo
     audit_db: str = "~/.clade/audit.db"
 
     def peer_secret(self, peer_id: str) -> str | None:
@@ -631,6 +636,60 @@ async def clade_reply(correlation_id: str, response: dict[str, Any], to: str) ->
         row_id = outbox.enqueue(_audit_conn, "reply", to, "/reply", env, str(e)[:100])
         audit_log("out", env["msg_id"], to, "reply", "queued_net", f"outbox row {row_id}: {type(e).__name__}")
         return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id, "note": "relay unreachable, queued"}
+
+
+@mcp.tool()
+async def clade_list_peers() -> dict[str, Any]:
+    """Discover all peers in the A2A network — names, IDs, roles, working paths.
+
+    Returns a directory of all participants known to this agent: yourself
+    (self) plus every other peer you can talk to.
+
+    Use this tool when:
+    - User asks "who's online" / "who can I talk to" / "list the peers"
+    - You need to pick the right peer for a question (match by role)
+    - You're new to a conversation and want to know the network layout
+
+    Each entry includes:
+      id       — technical slug used for routing (clade_ask to=<id>)
+      name     — human display name (e.g. "Marko Markovic")
+      role     — short description of what this peer does
+      workdir  — project directory this peer works in (informational)
+
+    Returns:
+        {
+            "self":  {"id": "...", "name": "...", "role": "...", "workdir": "..."},
+            "peers": [{...}, {...}],
+            "_protocol": "clade-a2a-directory-v1"
+        }
+    """
+    self_info = {
+        "id": cfg.my_id,
+        "name": cfg.name or cfg.my_id,
+        "role": cfg.role or "",
+        "workdir": cfg.workdir or "",
+    }
+    peers_list = []
+    for peer_id in cfg.peers:
+        info = cfg.peer_info(peer_id)
+        peers_list.append({
+            "id": peer_id,
+            "name": (info.name if info and info.name else peer_id),
+            "role": (info.role if info and info.role else ""),
+            "workdir": (info.workdir if info and info.workdir else ""),
+        })
+    return {
+        "self": self_info,
+        "peers": peers_list,
+        "_protocol": "clade-a2a-directory-v1",
+        "_instruction": (
+            "Use this directory to find the right peer for a question. "
+            "Match by 'role' field — e.g. database questions go to peers "
+            "with 'backend' or 'data' in their role description. "
+            "Address peers by either their 'id' (slug for clade_ask) or 'name' "
+            "in conversation; both are valid."
+        ),
+    }
 
 
 @mcp.tool()
