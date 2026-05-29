@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clade A2A — Setup</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --border: #e0e0e0;
+      --text: #1a1a1a;
+      --text-dim: #666;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --danger: #dc2626;
+      --success: #059669;
+      --code-bg: #f5f5f5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f0f0f;
+        --surface: #1a1a1a;
+        --border: #2a2a2a;
+        --text: #f0f0f0;
+        --text-dim: #999;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --code-bg: #1e1e1e;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem 1rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 880px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 2rem;
+    }
+    h1 {
+      margin: 0 0 0.5rem;
+      font-size: 1.75rem;
+      font-weight: 600;
+    }
+    .subtitle {
+      color: var(--text-dim);
+      font-size: 0.95rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 {
+      margin: 0 0 1rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      gap: 1rem;
+    }
+    .grid-2 {
+      grid-template-columns: 1fr 1fr;
+    }
+    @media (max-width: 640px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    label {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+    label .hint {
+      font-weight: 400;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+    }
+    input[type="text"], input[type="number"], textarea {
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.15s;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 90px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.88rem;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.92rem;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 1.1rem;
+      height: 1.1rem;
+      accent-color: var(--accent);
+    }
+    .peer-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+      position: relative;
+    }
+    .peer-row .header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .peer-row .header-row strong {
+      font-size: 0.95rem;
+      color: var(--text-dim);
+    }
+    .btn {
+      padding: 0.6rem 1.2rem;
+      border: none;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.92rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover {
+      background: var(--code-bg);
+    }
+    .btn-danger {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.8rem;
+      font-size: 0.85rem;
+    }
+    .btn-danger:hover {
+      background: var(--danger);
+      color: white;
+      border-color: var(--danger);
+    }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+    .actions .btn-primary {
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+    }
+    .add-peer {
+      margin: 0 0 1rem;
+      width: 100%;
+      padding: 0.7rem;
+      border: 2px dashed var(--border);
+      background: transparent;
+      color: var(--text-dim);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      font-size: 0.92rem;
+    }
+    .add-peer:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.85em;
+    }
+    .existing {
+      margin-top: 2rem;
+      padding: 1rem;
+      background: var(--code-bg);
+      border-radius: 8px;
+      font-size: 0.9rem;
+    }
+    .existing ul { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+    .existing a { color: var(--accent); text-decoration: none; }
+    .existing a:hover { text-decoration: underline; }
+    .error {
+      background: rgba(220, 38, 38, 0.1);
+      color: var(--danger);
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Clade A2A Setup</h1>
+      <p class="subtitle">Configure peers below. After submit, send each peer their unique install URL. They run one <code>curl … | bash</code> and they're online.</p>
+    </header>
+
+    <div id="error" class="error"></div>
+
+    <form id="setup-form">
+      <div class="card">
+        <h2>Project</h2>
+        <div class="field">
+          <label for="project_name">Project name <span class="hint">— short identifier, shown in URLs</span></label>
+          <input type="text" id="project_name" name="project_name" value="my-clade-setup" required>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Relay</h2>
+        <div class="grid grid-2">
+          <div class="field">
+            <label for="relay_url_host">Public host/IP <span class="hint">— what peers see</span></label>
+            <input type="text" id="relay_url_host" name="relay_url_host" value="{{ detected_lan_ip }}" required>
+          </div>
+          <div class="field">
+            <label for="relay_port">Port</label>
+            <input type="number" id="relay_port" name="relay_port" value="7777" min="1024" max="65535" required>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 1rem;">
+          <label for="relay_host">Bind address <span class="hint">— <code>0.0.0.0</code> = all interfaces, <code>127.0.0.1</code> = localhost only</span></label>
+          <input type="text" id="relay_host" name="relay_host" value="0.0.0.0" required>
+        </div>
+        <div class="checkbox-row" style="margin-top: 1rem;">
+          <input type="checkbox" id="start_relay" checked>
+          <label for="start_relay" style="margin: 0; font-weight: normal;">Start relay automatically after generating setup</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Peers</h2>
+        <div id="peers-container"></div>
+        <button type="button" class="add-peer" onclick="addPeer()">+ Add peer</button>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" onclick="window.location.reload()">Reset</button>
+        <button type="submit" class="btn btn-primary">Generate Setup</button>
+      </div>
+    </form>
+
+    {% if existing_setups %}
+    <div class="existing">
+      <strong>Existing setups in this session:</strong>
+      <ul>
+        {% for s in existing_setups %}
+        <li><a href="/setup/{{ s.project_token }}">{{ s.project_name }}</a> — {{ s.peers|length }} peers, relay at <code>{{ s.relay_url }}</code></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    let peerCount = 0;
+
+    function addPeer(defaults) {
+      defaults = defaults || {};
+      peerCount++;
+      const id = `peer-${peerCount}`;
+      const container = document.getElementById('peers-container');
+      const div = document.createElement('div');
+      div.className = 'peer-row';
+      div.dataset.peerIdx = peerCount;
+      div.innerHTML = `
+        <div class="header-row">
+          <strong>Peer ${peerCount}</strong>
+          <button type="button" class="btn btn-danger" onclick="removePeer(this)">Remove</button>
+        </div>
+        <div class="grid grid-2">
+          <div class="field">
+            <label>Technical ID <span class="hint">— slug, used in routing/HMAC</span></label>
+            <input type="text" name="peer_id" value="${defaults.peer_id || ''}" placeholder="frontend" required pattern="[a-zA-Z][a-zA-Z0-9_-]*">
+          </div>
+          <div class="field">
+            <label>Display name <span class="hint">— what other agents call it</span></label>
+            <input type="text" name="display_name" value="${defaults.display_name || ''}" placeholder="Marko Markovic">
+          </div>
+        </div>
+        <div class="field" style="margin-top: 1rem;">
+          <label>Role <span class="hint">— multi-line prompt describing this agent's role/expertise</span></label>
+          <textarea name="role" placeholder="You are a frontend developer specializing in React and TypeScript. Style: short concrete answers, link to docs when relevant.">${defaults.role || ''}</textarea>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
+    function removePeer(btn) {
+      btn.closest('.peer-row').remove();
+    }
+
+    document.getElementById('setup-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errorEl = document.getElementById('error');
+      errorEl.style.display = 'none';
+
+      const peers = [];
+      document.querySelectorAll('.peer-row').forEach(row => {
+        peers.push({
+          peer_id: row.querySelector('[name=peer_id]').value.trim(),
+          display_name: row.querySelector('[name=display_name]').value.trim(),
+          role: row.querySelector('[name=role]').value,
+        });
+      });
+
+      const payload = {
+        project_name: document.getElementById('project_name').value.trim(),
+        relay_host: document.getElementById('relay_host').value.trim(),
+        relay_url_host: document.getElementById('relay_url_host').value.trim(),
+        relay_port: parseInt(document.getElementById('relay_port').value, 10),
+        start_relay: document.getElementById('start_relay').checked,
+        peers,
+      };
+
+      try {
+        const resp = await fetch('/api/setup', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+          redirect: 'follow',
+        });
+        if (resp.redirected) {
+          window.location.href = resp.url;
+        } else if (!resp.ok) {
+          const data = await resp.json().catch(() => ({detail: resp.statusText}));
+          errorEl.textContent = `Error: ${JSON.stringify(data.detail)}`;
+          errorEl.style.display = 'block';
+        }
+      } catch (err) {
+        errorEl.textContent = `Network error: ${err.message}`;
+        errorEl.style.display = 'block';
+      }
+    });
+
+    // Start with 2 peers by default
+    addPeer({peer_id: 'frontend', display_name: ''});
+    addPeer({peer_id: 'backend', display_name: ''});
+  </script>
+</body>
+</html>
