@@ -54,6 +54,7 @@ class PeerInput(BaseModel):
     peer_id: str = Field(..., description="Technical slug for routing (e.g. 'frontend')")
     display_name: str = Field("", description="Display name shown to other agents")
     role: str = Field("", description="Multi-line role prompt")
+    workdir: str = Field("", description="Working directory on the peer's machine (informational, v1.5.0+)")
 
     @field_validator("peer_id")
     @classmethod
@@ -94,6 +95,7 @@ class PeerArtifact:
     peer_id: str
     display_name: str
     role: str
+    workdir: str                  # v1.5.0+ — informational, listed in directory
     download_token: str           # secret URL component
     bearer_token: str             # for auth to relay
     yaml_path: Path               # path on disk to the yaml file
@@ -136,10 +138,15 @@ def _detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
+def _effective_workdir(peer: PeerInput) -> str:
+    """Return the workdir the form supplied, or the default install path."""
+    return peer.workdir.strip() or f"~/clade-agent/workdir-{peer.peer_id}"
+
+
 def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
                 bearer: str, secret_for_pair: dict[frozenset, str],
                 relay_url: str, audit_dir: str = "~/.clade") -> dict:
-    """Build the per-peer yaml dict (v1.3.0+ schema with PeerInfo)."""
+    """Build the per-peer yaml dict (v1.3.0+ PeerInfo, v1.5.0+ workdir)."""
     peers_dict: dict[str, Any] = {}
     for other in all_peers:
         if other.peer_id == peer.peer_id:
@@ -151,6 +158,7 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
             entry["name"] = other.display_name
         if other.role and other.role.strip():
             entry["role"] = other.role.strip().split("\n")[0][:200]
+        entry["workdir"] = _effective_workdir(other)
         peers_dict[other.peer_id] = entry
 
     data: dict[str, Any] = {
@@ -160,6 +168,7 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
         data["name"] = peer.display_name
     if peer.role and peer.role.strip():
         data["role"] = peer.role.strip()
+    data["workdir"] = _effective_workdir(peer)
     data.update({
         "relay_url": relay_url,
         "bearer_token": bearer,
@@ -215,6 +224,7 @@ def _generate_setup(form: SetupForm, data_dir: Path) -> Setup:
             peer_id=peer.peer_id,
             display_name=peer.display_name or peer.peer_id,
             role=peer.role,
+            workdir=_effective_workdir(peer),
             download_token=download_tokens[peer.peer_id],
             bearer_token=bearers[peer.peer_id],
             yaml_path=yaml_path,
@@ -356,6 +366,40 @@ def create_app(state: AppState) -> FastAPI:
             "setups": len(state.setups),
             "data_dir": str(state.data_dir),
         }
+
+    # --- Directory (v1.5.0+ discovery protocol) ---
+
+    @app.get("/directory.json")
+    async def directory_json() -> dict:
+        """Machine-readable directory of all peers across all setups.
+
+        Same protocol as the clade_list_peers MCP tool: each peer has
+        id, name, role, workdir. Lists ALL setups currently in memory."""
+        setups_out = []
+        for setup in state.setups.values():
+            peers_out = [
+                {
+                    "id": p.peer_id,
+                    "name": p.display_name,
+                    "role": p.role,
+                    "workdir": p.workdir,
+                }
+                for p in setup.peers.values()
+            ]
+            setups_out.append({
+                "project_name": setup.project_name,
+                "relay_url": setup.relay_url,
+                "peers": peers_out,
+            })
+        return {
+            "_protocol": "clade-a2a-directory-v1",
+            "setups": setups_out,
+        }
+
+    @app.get("/directory", response_class=HTMLResponse)
+    async def directory_html() -> str:
+        tmpl = env.get_template("directory.html")
+        return tmpl.render(setups=list(state.setups.values()))
 
     return app
 

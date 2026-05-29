@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clade A2A — Directory</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --border: #e0e0e0;
+      --text: #1a1a1a;
+      --text-dim: #666;
+      --accent: #2563eb;
+      --code-bg: #f5f5f5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f0f0f;
+        --surface: #1a1a1a;
+        --border: #2a2a2a;
+        --text: #f0f0f0;
+        --text-dim: #999;
+        --accent: #3b82f6;
+        --code-bg: #1e1e1e;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem 1rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container { max-width: 1000px; margin: 0 auto; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.75rem; font-weight: 600; }
+    .subtitle { color: var(--text-dim); font-size: 0.95rem; margin-bottom: 2rem; }
+    .protocol-badge {
+      display: inline-block;
+      background: var(--code-bg);
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      color: var(--text-dim);
+      margin-left: 0.5rem;
+      vertical-align: middle;
+    }
+    .empty {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-dim);
+    }
+    .empty code {
+      background: var(--code-bg);
+      padding: 0.3rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+      display: inline-block;
+      margin-top: 0.5rem;
+    }
+    .setup {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .setup-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .setup-header h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+    .setup-header .relay {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      font-weight: 500;
+      color: var(--text-dim);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    .peer-id {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.86rem;
+      background: var(--code-bg);
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+    }
+    .peer-name {
+      font-weight: 500;
+    }
+    .peer-role {
+      color: var(--text-dim);
+      font-size: 0.88rem;
+      white-space: pre-wrap;
+      max-width: 320px;
+    }
+    .peer-workdir code {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      background: transparent;
+      padding: 0;
+    }
+    .nav {
+      margin-top: 2rem;
+      display: flex;
+      gap: 0.75rem;
+    }
+    .btn {
+      padding: 0.6rem 1.2rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font-size: 0.92rem;
+      text-decoration: none;
+    }
+    .btn:hover { background: var(--code-bg); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Directory <span class="protocol-badge">clade-a2a-directory-v1</span></h1>
+    <p class="subtitle">All participants currently registered with this setup server. Each agent can also query this via the <code>clade_list_peers</code> MCP tool from its own Claude session.</p>
+
+    {% if not setups %}
+    <div class="empty">
+      <p>No setups generated yet.</p>
+      <code><a href="/">← Create a setup</a></code>
+    </div>
+    {% else %}
+      {% for setup in setups %}
+      <div class="setup">
+        <div class="setup-header">
+          <h2>{{ setup.project_name }}</h2>
+          <div class="relay">Relay: {{ setup.relay_url }}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Role</th>
+              <th>Working directory</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for peer_id, peer in setup.peers.items() %}
+            <tr>
+              <td><span class="peer-id">{{ peer.peer_id }}</span></td>
+              <td class="peer-name">{{ peer.display_name }}</td>
+              <td class="peer-role">{{ peer.role or '—' }}</td>
+              <td class="peer-workdir"><code>{{ peer.workdir or '—' }}</code></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+    <div class="nav">
+      <a href="/" class="btn">← Back to setup</a>
+      <a href="/directory.json" class="btn">JSON</a>
+    </div>
+  </div>
+</body>
+</html>

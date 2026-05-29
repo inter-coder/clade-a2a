@@ -253,6 +253,11 @@
         {% if peer.role %}
         <div class="role-snippet">{{ peer.role }}</div>
         {% endif %}
+        {% if peer.workdir %}
+        <div style="font-size: 0.82rem; color: var(--text-dim); margin-bottom: 0.75rem;">
+          <strong>Workdir:</strong> <code>{{ peer.workdir }}</code>
+        </div>
+        {% endif %}
         <div class="install-block">
           <button class="copy-btn" onclick="copyText(this)">Copy</button>
           <code id="cmd-{{ peer_id }}">curl -fsSL {{ public_url_base }}/agent/{{ peer.download_token }}/install | bash</code>
@@ -270,6 +275,7 @@
 
     <div class="footer-actions">
       <a href="/" class="btn">← Back to setup</a>
+      <a href="/directory" class="btn">View directory</a>
       <a href="{{ setup.relay_url }}/health" class="btn" target="_blank">Check relay health</a>
     </div>
   </div>
