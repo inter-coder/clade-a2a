@@ -42,12 +42,41 @@ from agent import outbox  # noqa: E402
 
 # ---- Config ----
 
+class PeerInfo(BaseModel):
+    """Sta znamo o drugom peer-u (display + role summary)."""
+    secret: str  # shared HMAC hex (obavezno za pair-wise verifikaciju)
+    name: str | None = None  # display ime (npr. "Marko Markovic")
+    role: str | None = None  # role summary (kratak opis za interactive Claude)
+
+
 class Config(BaseModel):
+    """Per-agent config (v1.3.0+ ima name + role + per-peer info).
+
+    Backward compat: peers moze biti dict[str, str] (stari format gde value je
+    samo HMAC secret) ILI dict[str, dict] (novi format sa name/role)."""
     my_id: str
+    name: str | None = None  # display ime (npr. "Marko Markovic"); default = my_id
+    role: str | None = None  # multi-line system prompt opisuje ulogu (v1.3.0+)
     relay_url: str = "http://localhost:7777"
     bearer_token: str
-    peers: dict[str, str] = Field(default_factory=dict)  # peer_id → HMAC secret hex
+    peers: dict[str, str | PeerInfo] = Field(default_factory=dict)  # peer_id → secret ili PeerInfo
     audit_db: str = "~/.clade/audit.db"
+
+    def peer_secret(self, peer_id: str) -> str | None:
+        """Backward-compat helper: vraca HMAC secret za peer."""
+        entry = self.peers.get(peer_id)
+        if entry is None:
+            return None
+        if isinstance(entry, str):
+            return entry
+        return entry.secret
+
+    def peer_info(self, peer_id: str) -> PeerInfo | None:
+        """Vraca PeerInfo (sa name/role) ili None. None ako je peer u starom string formatu."""
+        entry = self.peers.get(peer_id)
+        if isinstance(entry, PeerInfo):
+            return entry
+        return None
 
 
 def load_config() -> Config:
@@ -252,7 +281,7 @@ def verify(secret_hex: str, env: dict) -> bool:
 # ---- Envelope builder ----
 
 def _make_envelope(kind: str, to: str, payload: dict, correlation_id: str | None = None) -> dict:
-    secret = cfg.peers[to]
+    secret = cfg.peer_secret(to) or ""
     msg_id = str(uuid.uuid4())
     nonce = secrets.token_hex(16)
     ts_ms = int(time.time() * 1000)
@@ -375,7 +404,7 @@ async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str,
         audit_log("in", env["msg_id"], to, "ask_reply", "no_response")
         return {"error": "No response field in relay reply"}
 
-    secret = cfg.peers[to]
+    secret = cfg.peer_secret(to) or ""
     if not verify(secret, reply_env):
         audit_log("rejected", reply_env.get("msg_id"), to, "reply", "bad_hmac", "Reply HMAC verification failed!")
         return {"error": "Reply HMAC verification failed — potential MITM ili kompromitovan peer"}
@@ -524,7 +553,7 @@ async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
             audit_log("rejected", env.get("msg_id"), peer, env.get("kind"), "unknown_peer")
             rejected.append({"msg_id": env.get("msg_id"), "reason": f"unknown peer: {peer}"})
             continue
-        secret = cfg.peers[peer]
+        secret = cfg.peer_secret(peer) or ""
         if not verify(secret, env):
             audit_log("rejected", env.get("msg_id"), peer, env.get("kind"), "bad_hmac")
             rejected.append({"msg_id": env.get("msg_id"), "reason": "HMAC verification failed"})
