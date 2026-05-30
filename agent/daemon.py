@@ -675,6 +675,10 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                 if r.status_code == 200:
                     consecutive_errors = 0
                     data = r.json()
+                    # v1.4.5: paralelno obradjuj batch (claude --print je IO-bound,
+                    # sekvencijalno je gomilalo latenciju 3-5x pri opterecenju).
+                    # return_exceptions=True da jedna greska ne prekida ceo batch.
+                    valid = []
                     for env in data.get("messages", []):
                         peer = env.get("from_agent")
                         if peer not in cfg.peers:
@@ -685,12 +689,16 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                             log(f"{RED}? msg from {peer} HMAC failed — ignorisem (mozda tampered/MITM){RESET}", "")
                             audit_log_fn("rejected", env.get("msg_id"), peer, env.get("kind"), "bad_hmac")
                             continue
-                        # Process in foreground (sekvencijalno) — paralel bi mozda zakomplikovao audit
-                        await process_message(env, dangerous, workdir, cfg, sign_fn,
-                                              audit_log_fn,
-                                              record_thread_fn=record_thread_fn,
-                                              load_thread_fn=load_thread_fn,
-                                              format_thread_fn=format_thread_fn)
+                        valid.append(env)
+                    if valid:
+                        await asyncio.gather(*[
+                            process_message(env, dangerous, workdir, cfg, sign_fn,
+                                            audit_log_fn,
+                                            record_thread_fn=record_thread_fn,
+                                            load_thread_fn=load_thread_fn,
+                                            format_thread_fn=format_thread_fn)
+                            for env in valid
+                        ], return_exceptions=True)
                 else:
                     consecutive_errors += 1
                     if consecutive_errors <= 3 or consecutive_errors % 30 == 0:
@@ -735,12 +743,19 @@ def main() -> None:
     lock_path = acquire_lock(cfg)
 
     # Daemon workdir za claude --print
+    # v1.4.5: ako mkdtemp-ujemo, registruj cleanup na exit (pre toga su workdir-ovi
+    # `/tmp/clade-daemon-*-<random>` cureli zauvek — vidljivo na disku).
+    workdir_is_temp = not args.workdir
     if args.workdir:
         workdir = Path(args.workdir).expanduser().resolve()
         workdir.mkdir(parents=True, exist_ok=True)
     else:
         import tempfile
         workdir = Path(tempfile.mkdtemp(prefix=f"clade-daemon-{cfg.my_id}-"))
+    if workdir_is_temp:
+        import atexit
+        import shutil
+        atexit.register(lambda: shutil.rmtree(workdir, ignore_errors=True))
 
     # Generisi .mcp.json u workdir-u (v1.0.0 P0#1: claude --print dobija clade tools eager)
     write_mcp_config(workdir, cfg)

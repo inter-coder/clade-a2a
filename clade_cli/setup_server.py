@@ -252,7 +252,16 @@ uvicorn.run(relay.main.app, host='{setup.relay_host_bind}', port={setup.relay_po
         stdout=log_fh, stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    LOG.info("relay subprocess started PID=%d (log: %s)", proc.pid, log_path)
+    # v1.4.5: pisi PID file da bi start-setup-server.sh reset blok mogao pouzdano
+    # da ubije relay-e (pkill -f "import relay.main" promasuje jer je pattern u
+    # stringu Python -c argumenta — pgrep ne hvata sve verzije pouzdano).
+    pid_file = setup.tokens_path.parent / "relay.pid"
+    try:
+        pid_file.write_text(str(proc.pid))
+    except OSError as e:
+        LOG.warning("nije moglo da se napise %s: %s", pid_file, e)
+    LOG.info("relay subprocess started PID=%d (log: %s, pid file: %s)",
+             proc.pid, log_path, pid_file)
     return proc
 
 

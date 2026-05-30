@@ -65,6 +65,27 @@ if [[ -z "$CLADE_NO_RESET" ]]; then
     "relay.main:app"
   )
 
+  # v1.4.5: prvo ubij relay-e preko PID fajlova (pouzdano, ne zavisi od pgrep
+  # match-a Python -c argumenta). Tek onda fallback pkill -f patterns za
+  # eventualne orphan-e.
+  if [[ -d "$DATA_DIR" ]]; then
+    for pf in "$DATA_DIR"/*/relay.pid; do
+      [[ -f "$pf" ]] || continue
+      rpid=$(cat "$pf" 2>/dev/null || echo "")
+      if [[ -n "$rpid" ]] && kill -0 "$rpid" 2>/dev/null; then
+        kill -TERM "$rpid" 2>/dev/null || true
+      fi
+    done
+    sleep 1
+    for pf in "$DATA_DIR"/*/relay.pid; do
+      [[ -f "$pf" ]] || continue
+      rpid=$(cat "$pf" 2>/dev/null || echo "")
+      if [[ -n "$rpid" ]] && kill -0 "$rpid" 2>/dev/null; then
+        kill -KILL "$rpid" 2>/dev/null || true
+      fi
+    done
+  fi
+
   for pat in "${KILL_PATTERNS[@]}"; do
     pkill -TERM -f "$pat" 2>/dev/null || true
   done
