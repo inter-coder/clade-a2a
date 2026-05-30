@@ -407,16 +407,22 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
     sections.append(
         f"{peer_intro} ti je upravo postavio pitanje. Pravila odgovora:\n"
         "1. Pricaj sa NJIM (peer-to-peer), ne sa korisnikom. "
-        "Ne kazi 'morace$ ti to da uradis' — peer ne moze da menja sesiju.\n"
+        "Ne kazi 'moraces ti to da uradis' — peer ne moze da menja sesiju.\n"
         "2. Ako mozes Bash komandom (npr `uname -r`, `hostname -I`) ili Read-om "
         "da dodjes do TACNOG odgovora, prvo to pokreni — pa odgovori. "
         "Halucinacija ('verovatno X') je gora od priznanja 'ne mogu'.\n"
-        "3. Sazet i konkretan odgovor u njegovoj ulozi.\n"
+        "3. SAZETO. Default: max 5 redova ili ~80 reci. Ako tema stvarno trazi "
+        "vise (debug guide, kompleksan SQL), daj 1-2 linije TL;DR + ponudi "
+        "'Detalji?' da peer pita za prosirenje. Bolje da peer mora da pita "
+        "drugo pitanje nego da dobije zid texta.\n"
         "4. AKO pitanje je dvosmisleno ili fali kontekst, zapocni odgovor sa "
         "marker-om `[CLARIFY]` i postavi clarify pitanje. Daemon ce to oznaciti "
         "i interactive Claude na drugoj strani ce ga prikazati korisniku.\n"
         "5. Ako stvarno ne mozes (sandbox/permisije/nedostatak alata), kazi to "
-        "direktno + reci sta bi peer trebao da uradi sam."
+        "direktno + reci sta bi peer trebao da uradi sam.\n"
+        "6. Drzi se SVOJE uloge. Ako pitanje je VAN tvog domena, ili predloži "
+        "konkretnog peer-a iz directorija ('Bolje pitaj Charlie — on je DBA'), "
+        "ili reci 'van moje uloge'. Ne pisi pesme/poeziju/random ako si dev."
     )
 
     # 6) Thread continuity (ako ima istorije)

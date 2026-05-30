@@ -241,15 +241,24 @@ if [[ -n "$PID_FILES" ]]; then
   done <<< "$PID_FILES"
 fi
 
-# v1.4.6: --include-setups — ubij relay-e tih setup-a (preko relay.pid) pa rm -rf dir
+# v1.4.6+: --include-setups — ubij relay-e tih setup-a (preko relay.pid) pa rm -rf dir
+# v1.4.7: PRE kill, sanity proveri da PID zaista pripada relay procesu (ima
+# `relay.main` u argv). Bez ovog, stale relay.pid sa recikliranim PID-om bi
+# ubio nesto random na sistemu (potencijalno opasno).
 if [[ "$INCLUDE_SETUPS" == "true" ]] && [[ -n "$SETUPS" ]]; then
   while read -r d; do
     [[ -z "$d" ]] && continue
     relay_pid=$(cat "$d/relay.pid" 2>/dev/null || echo "")
     if [[ -n "$relay_pid" ]] && kill -0 "$relay_pid" 2>/dev/null; then
-      kill -TERM "$relay_pid" 2>/dev/null && echo -e "${GREEN}✓${RESET} SIGTERM → setup relay PID $relay_pid"
-      sleep 1
-      kill -0 "$relay_pid" 2>/dev/null && kill -KILL "$relay_pid" 2>/dev/null
+      pid_args=$(ps -p "$relay_pid" -o args= 2>/dev/null || echo "")
+      if echo "$pid_args" | grep -qE "relay\.main|clade-relay|uvicorn"; then
+        kill -TERM "$relay_pid" 2>/dev/null && echo -e "${GREEN}✓${RESET} SIGTERM → setup relay PID $relay_pid"
+        sleep 1
+        kill -0 "$relay_pid" 2>/dev/null && kill -KILL "$relay_pid" 2>/dev/null
+      else
+        echo -e "${YELLOW}⚠${RESET} PID $relay_pid postoji ali ARGV ne sadrzi relay.main — SKIPPING (verovatno reciklirani PID)"
+        echo -e "  ${DIM}argv: ${pid_args:0:120}${RESET}"
+      fi
     fi
     rm -rf "$d" && echo -e "${GREEN}✓${RESET} rm -rf $d"
   done <<< "$SETUPS"

@@ -38,8 +38,19 @@ if [[ ! -f "$WORKDIR/.mcp.json" ]]; then
   exit 1
 fi
 
-# v1.4.6: provera mog daemon-a preko lock fajla (file lock je primarni izvor istine)
-LOCK_FILE="${HOME}/.clade/${MY_ID}-daemon.lock"
+# v1.4.7: provera mog daemon-a preko lock fajla. Lock je u dirname(audit_db) iz
+# yaml-a (ne hardkodirano ~/.clade — moze biti override-ovano).
+LOCK_DIR=$(python3 -c "
+import yaml, os
+try:
+    cfg = yaml.safe_load(open('$PEER_YAML'))
+    db = cfg.get('audit_db', '~/.clade/${MY_ID}-audit.db')
+    print(os.path.dirname(os.path.expanduser(db)))
+except Exception:
+    print(os.path.expanduser('~/.clade'))
+" 2>/dev/null)
+LOCK_DIR="${LOCK_DIR:-$HOME/.clade}"
+LOCK_FILE="${LOCK_DIR}/${MY_ID}-daemon.lock"
 DAEMON_STATUS="offline"
 if [[ -f "$LOCK_FILE" ]]; then
   DPID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")

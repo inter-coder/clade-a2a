@@ -24,9 +24,21 @@ if [[ ! -f "$CLADE_CONFIG" ]]; then
   exit 1
 fi
 
-# v1.4.5: provera postojeceg daemon-a (file lock je u ~/.clade/<peer>-daemon.lock).
-# Ako stari tece, ponudi restart (interaktivno) ili sa --restart flag-om.
-LOCK_FILE="${HOME}/.clade/{{ peer.peer_id }}-daemon.lock"
+# v1.4.7: provera postojeceg daemon-a. Lock fajl je u dirname(audit_db) iz
+# yaml-a (vidi agent/daemon.py:_daemon_lock_path). Pre v1.4.7 smo hardkodirali
+# ~/.clade/ — pa ako user override-uje audit_db u yaml-u, restart logika nije
+# radila. Sad parse-ujemo yaml + fallback na ~/.clade/ ako parse pukne.
+LOCK_DIR=$(python3 -c "
+import yaml, os, sys
+try:
+    cfg = yaml.safe_load(open('$CLADE_CONFIG'))
+    db = cfg.get('audit_db', '~/.clade/{{ peer.peer_id }}-audit.db')
+    print(os.path.dirname(os.path.expanduser(db)))
+except Exception:
+    print(os.path.expanduser('~/.clade'))
+" 2>/dev/null)
+LOCK_DIR="${LOCK_DIR:-$HOME/.clade}"
+LOCK_FILE="${LOCK_DIR}/{{ peer.peer_id }}-daemon.lock"
 RESTART=""
 NEW_ARGS=()
 for a in "$@"; do
