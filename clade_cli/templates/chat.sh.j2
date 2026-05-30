@@ -82,6 +82,54 @@ except Exception:
 " 2>/dev/null || echo "")
 fi
 
+# v1.4.8: ucitaj pending send-ove iz audit DB-a (thread_history) od last_seen
+# vremena. Bez ovog, send poruke (fire-and-forget) su nevidljive user-u —
+# bob daemon ih samo log-uje, nigde se ne prikazu kad user otvori chat.sh.
+LAST_SEEN_FILE="${AGENT_DIR}/.chat_last_seen_${MY_ID}"
+LAST_SEEN_MS=$(cat "$LAST_SEEN_FILE" 2>/dev/null || echo "0")
+# Odredi audit DB put iz yaml-a
+AUDIT_DB=$(python3 -c "
+import yaml, os
+try:
+    cfg = yaml.safe_load(open('$PEER_YAML'))
+    print(os.path.expanduser(cfg.get('audit_db', '~/.clade/${MY_ID}-audit.db')))
+except Exception:
+    print(os.path.expanduser('~/.clade/${MY_ID}-audit.db'))
+" 2>/dev/null)
+PENDING_SENDS=""
+if [[ -f "$AUDIT_DB" ]]; then
+  PENDING_SENDS=$(python3 -c "
+import sqlite3, json, sys
+try:
+    c = sqlite3.connect('$AUDIT_DB')
+    # v1.4.8: send-ovi su u 'audit' tabeli (note kolona ima JSON payload),
+    # ne u 'thread_history' (koja zahteva _thread_id tag).
+    rows = c.execute('''
+        SELECT ts_ms, peer, note
+        FROM audit
+        WHERE direction='in' AND kind='send' AND ts_ms > ?
+        ORDER BY ts_ms ASC LIMIT 20
+    ''', (${LAST_SEEN_MS},)).fetchall()
+    if not rows:
+        sys.exit(0)
+    import datetime as _dt
+    out = []
+    for ts, peer, note in rows:
+        try:
+            p = json.loads(note or '{}')
+            text = p.get('text') or json.dumps({k:v for k,v in p.items() if not k.startswith('_')}, ensure_ascii=False)[:120]
+        except Exception:
+            text = (note or '')[:120]
+        when = _dt.datetime.fromtimestamp(ts/1000).strftime('%m-%d %H:%M')
+        out.append(f'  [{when}] {peer}: {text}')
+    print(chr(10).join(out))
+except Exception as e:
+    print(f'  (nije moglo da se procita audit: {e})', file=sys.stderr)
+" 2>/dev/null)
+fi
+# Pisi sada kao novi last_seen (sledeci put nece prikazati ove)
+date +%s%3N > "$LAST_SEEN_FILE" 2>/dev/null
+
 # v1.4.6: parse-uj lokalan yaml za listu peer-ova sa imenima/rolama
 PEER_DIRECTORY=""
 if [[ -f "$PEER_YAML" ]]; then
@@ -110,13 +158,27 @@ except Exception as e:
 fi
 
 # Compose system prompt sa svim ovim
+_PENDING_SECTION=""
+if [[ -n "$PENDING_SENDS" ]]; then
+  _PENDING_COUNT=$(echo "$PENDING_SENDS" | wc -l | tr -d ' ')
+  _PENDING_SECTION="
+
+PENDING SEND-OVI ($_PENDING_COUNT komada, od proslog otvaranja chat.sh-a) —
+'tell me' poruke koje peer-ovi su poslali bez ocekivanja odgovora; user
+nije znao da postoje dok nije otvorio chat.sh:
+${PENDING_SENDS}
+
+Korisnika ODMAH na pocetku obavesti da ima $_PENDING_COUNT novih poruka i
+sumaraj ih jednom recenicom. Cekaj sta zeli da uradi sa njima."
+fi
+
 SYSTEM_PROMPT="Ti pomazes korisniku da komunicira preko Clade A2A mreze.
 
 KORISNIK je peer '${MY_NAME}' (ID: ${MY_ID}). Njegov daemon je ${DAEMON_STATUS}.
 Relay: ${RELAY_URL}.
 
 Drugi peer-ovi (iz tvog yaml allowlist-a):
-${PEER_DIRECTORY:-  (lista nedostupna)}
+${PEER_DIRECTORY:-  (lista nedostupna)}${_PENDING_SECTION}
 
 Bitno: 'registrovan u relay-u' znaci samo da peer ima validan token. Da bi
 zaista odgovorio mora i njegov daemon teci na njegovoj masini — to se vidi

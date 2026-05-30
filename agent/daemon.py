@@ -43,7 +43,14 @@ POLL_INTERVAL_S = 2.0
 CLAUDE_TIMEOUT_S = 90
 OUTBOX_CHECK_INTERVAL_S = 30.0
 OUTBOX_STALE_WARN_S = 30.0      # poruka starija od ovog → warn log
+# v1.4.8: max paralelnih claude --print spawn-ova po daemon-u.
+# Stress test je pokazao da Claude API rate-limit-uje 5 paralelnih, pa svaki
+# traje 5x duze i sve timeout-uju. Pri 2 paralelna su realno latencije.
+# Override preko CLADE_DAEMON_CONCURRENCY env var.
+CLAUDE_CONCURRENCY = int(os.environ.get("CLADE_DAEMON_CONCURRENCY", "2"))
 SHUTDOWN_EVENT = asyncio.Event()
+_claude_semaphore: asyncio.Semaphore | None = None  # init u poll_loop
+_inflight_tasks: set[asyncio.Task] = set()
 
 
 # ---- Payload → question text ekstrakcija ----
@@ -536,7 +543,15 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
 
     if kind == "send":
         log(f"{CYAN}← send  {RESET}{DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET}: {payload}", "")
-        audit_log_fn("in", env["msg_id"], from_agent, "send", "logged")
+        # v1.4.8: cuvamo payload JSON u 'note' polje audit-a da chat.sh moze
+        # da prikaze pending send-ove user-u (thread_history zahteva _thread_id
+        # koji fire-and-forget send-ovi nemaju).
+        import json as _j  # noqa: PLC0415
+        try:
+            note = _j.dumps(payload, ensure_ascii=False)[:1000]
+        except Exception:
+            note = str(payload)[:1000]
+        audit_log_fn("in", env["msg_id"], from_agent, "send", "logged", note)
         return
 
     if kind == "ask":
@@ -656,8 +671,22 @@ async def outbox_monitor_loop(cfg, audit_conn, outbox_mod) -> None:
                     outbox_mod.mark_failed(audit_conn, row["id"], str(e)[:80])
 
 
+async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
+                                sign_fn, audit_log_fn, **kwargs) -> None:
+    """v1.4.8: Wrapper koji uzima semafor pre nego spawn-uje claude --print.
+    Bez ovog 5+ paralelnih ask-ova izaziva Claude API rate-limit pa svaki
+    traje 5x duze i sve timeout-uju (potvrdjeno u v1.4.7 stress testu)."""
+    if _claude_semaphore is None:
+        await process_message(env, dangerous, workdir, cfg, sign_fn, audit_log_fn, **kwargs)
+        return
+    async with _claude_semaphore:
+        await process_message(env, dangerous, workdir, cfg, sign_fn, audit_log_fn, **kwargs)
+
+
 async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, audit_log_fn,
                      record_thread_fn=None, load_thread_fn=None, format_thread_fn=None) -> None:
+    global _claude_semaphore
+    _claude_semaphore = asyncio.Semaphore(CLAUDE_CONCURRENCY)
     banner(f"Clade Daemon — my_id={cfg.my_id}")
     log(f"relay:       {cfg.relay_url}")
     log(f"peers:       {list(cfg.peers.keys())}")
@@ -665,6 +694,7 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
     log(f"poll:        every {POLL_INTERVAL_S}s")
     log(f"audit:       {cfg.audit_db}")
     log(f"workdir:     {workdir}")
+    log(f"concurrency: max {CLAUDE_CONCURRENCY} paralelnih claude --print (CLADE_DAEMON_CONCURRENCY)")
     log("")
     log(f"{BOLD}listening for messages... (Ctrl+C to stop){RESET}", "")
     log("")
@@ -681,10 +711,11 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                 if r.status_code == 200:
                     consecutive_errors = 0
                     data = r.json()
-                    # v1.4.5: paralelno obradjuj batch (claude --print je IO-bound,
-                    # sekvencijalno je gomilalo latenciju 3-5x pri opterecenju).
-                    # return_exceptions=True da jedna greska ne prekida ceo batch.
-                    valid = []
+                    # v1.4.8: non-blocking dispatch — pre toga `asyncio.gather`
+                    # blokirao poll loop dok ceo batch ne završi. Pri 5+
+                    # paralelnih ask-ova, novi su čekali 90s+ da uđu u kontekst.
+                    # Sad: create_task po validnom ask-u, semafor kontroliše
+                    # stvarni claude --print konkurenciju (default 2).
                     for env in data.get("messages", []):
                         peer = env.get("from_agent")
                         if peer not in cfg.peers:
@@ -695,16 +726,14 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                             log(f"{RED}? msg from {peer} HMAC failed — ignorisem (mozda tampered/MITM){RESET}", "")
                             audit_log_fn("rejected", env.get("msg_id"), peer, env.get("kind"), "bad_hmac")
                             continue
-                        valid.append(env)
-                    if valid:
-                        await asyncio.gather(*[
-                            process_message(env, dangerous, workdir, cfg, sign_fn,
-                                            audit_log_fn,
-                                            record_thread_fn=record_thread_fn,
-                                            load_thread_fn=load_thread_fn,
-                                            format_thread_fn=format_thread_fn)
-                            for env in valid
-                        ], return_exceptions=True)
+                        task = asyncio.create_task(_process_with_limit(
+                            env, dangerous, workdir, cfg, sign_fn, audit_log_fn,
+                            record_thread_fn=record_thread_fn,
+                            load_thread_fn=load_thread_fn,
+                            format_thread_fn=format_thread_fn,
+                        ))
+                        _inflight_tasks.add(task)
+                        task.add_done_callback(_inflight_tasks.discard)
                 else:
                     consecutive_errors += 1
                     if consecutive_errors <= 3 or consecutive_errors % 30 == 0:
@@ -790,6 +819,19 @@ def main() -> None:
         try:
             await poll  # poll_loop drzi semantiku zivota; monitor ide u pozadini
         finally:
+            # v1.4.8: ceka in-flight claude --print task-ove max 10s pre
+            # shutdown-a. Bez ovog, SIGTERM mid-task-a ostavi zombie spawn-ove
+            # koje OS ce sam ubiti kad parent umre, ali audit log ne dobija
+            # finalni "reply sent" zapis.
+            if _inflight_tasks:
+                log(f"cekam {len(_inflight_tasks)} in-flight ask-ova (max 10s)...", "")
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*_inflight_tasks, return_exceptions=True),
+                        timeout=10,
+                    )
+                except asyncio.TimeoutError:
+                    log(f"{YELLOW}timeout — {len(_inflight_tasks)} ask-ova nedovrseno{RESET}", "")
             monitor.cancel()
             try:
                 await monitor
