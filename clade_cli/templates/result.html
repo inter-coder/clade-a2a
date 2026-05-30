@@ -213,9 +213,34 @@
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1>{{ setup.project_name }} <span class="badge">Ready</span></h1>
-      <p class="subtitle">Send each peer their install command (below). They paste, hit enter, and they're online.</p>
+    <header style="display:flex;align-items:center;gap:1rem">
+      <svg width="56" height="56" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Clade A2A" style="flex-shrink:0">
+        <defs>
+          <radialGradient id="sparkRes" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#F4A88B"/><stop offset="60%" stop-color="#DA7756"/><stop offset="100%" stop-color="#A8482E"/>
+          </radialGradient>
+          <radialGradient id="nodeRes" cx="35%" cy="35%" r="65%">
+            <stop offset="0%" stop-color="#E89A7B"/><stop offset="100%" stop-color="#B45A3C"/>
+          </radialGradient>
+        </defs>
+        <g stroke="#CC785C" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.65">
+          <path d="M 128 128 C 108 108, 70 70, 44 44"/><path d="M 128 128 C 148 108, 186 70, 212 44"/>
+          <path d="M 128 128 C 108 148, 70 186, 44 212"/><path d="M 128 128 C 148 148, 186 186, 212 212"/>
+          <path d="M 128 128 C 124 100, 128 60, 128 30"/><path d="M 128 128 C 132 156, 128 196, 128 226"/>
+        </g>
+        <g fill="url(#nodeRes)">
+          <circle cx="44" cy="44" r="9"/><circle cx="212" cy="44" r="9"/><circle cx="44" cy="212" r="9"/>
+          <circle cx="212" cy="212" r="9"/><circle cx="128" cy="30" r="9"/><circle cx="128" cy="226" r="9"/>
+        </g>
+        <g fill="url(#sparkRes)">
+          <path d="M 128 72 L 135 121 L 184 128 L 135 135 L 128 184 L 121 135 L 72 128 L 121 121 Z"/>
+        </g>
+        <circle cx="128" cy="128" r="6" fill="#FFF5EE" opacity="0.7"/>
+      </svg>
+      <div>
+        <h1 style="margin:0">{{ setup.project_name }} <span class="badge">Ready</span></h1>
+        <p class="subtitle" style="margin:0.25rem 0 0">Send each peer their install command. They paste, hit enter, and they're online.</p>
+      </div>
     </header>
 
     <div class="card">
