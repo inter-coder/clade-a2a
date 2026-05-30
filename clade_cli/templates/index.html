@@ -266,9 +266,13 @@
     <div id="error" class="error"></div>
 
     <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
-      <h2 style="margin:0 0 0.5rem">Quick start</h2>
-      <p class="hint" style="margin:0 0 0.75rem">Load a pre-configured mini dev shop (CEO + frontend + backend + qa + engineering team). You can tweak any field before submit.</p>
-      <button type="button" class="btn btn-secondary" onclick="loadVirtualCompanyTemplate()">Load virtual-company template</button>
+      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Quick start</h2>
+      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">Load a pre-configured mini dev shop (CEO + frontend + backend + qa + engineering team). You can tweak any field before submit.</p>
+      <button type="button"
+              style="background:#DA7756;color:white;border:none;padding:0.6rem 1.2rem;border-radius:6px;font-family:inherit;font-size:0.92rem;cursor:pointer;font-weight:500"
+              onmouseover="this.style.background='#C04B2F'"
+              onmouseout="this.style.background='#DA7756'"
+              onclick="loadVirtualCompanyTemplate()">Load virtual-company template</button>
     </div>
 
     <form id="setup-form">
@@ -450,9 +454,9 @@
     });
 
     // v1.10.0: pre-fill mini dev shop (CEO + 3 employees + engineering team).
-    // Sve sto unesetes pre nego sto pritisnete Generate Setup je menjivo.
+    // Everything is editable before Generate Setup.
     function loadVirtualCompanyTemplate() {
-      if (!confirm('Ovo ce ZAMENITI sve trenutne peer-ove i team-ove. Nastaviti?')) return;
+      if (!confirm('This will REPLACE all current peers and teams. Continue?')) return;
       document.getElementById('project_name').value = 'virtual-company';
       document.getElementById('peers-container').innerHTML = '';
       document.getElementById('teams-container').innerHTML = '';
