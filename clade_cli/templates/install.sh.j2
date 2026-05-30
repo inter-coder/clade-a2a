@@ -52,6 +52,7 @@ else
 fi
 
 # --- Clone + install clade-a2a ---
+NEEDS_REINSTALL=0
 if [[ ! -d "$CLADE_REPO_DIR" ]]; then
   info "Cloning clade-a2a to $CLADE_REPO_DIR..."
   if [[ "$CLADE_REPO_DIR" == /opt/* ]] && [[ ! -w "$(dirname "$CLADE_REPO_DIR")" ]]; then
@@ -62,9 +63,16 @@ if [[ ! -d "$CLADE_REPO_DIR" ]]; then
   fi
   git clone "$CLADE_REPO_URL" "$CLADE_REPO_DIR"
   ok "clade-a2a cloned"
+  NEEDS_REINSTALL=1
 else
   info "clade-a2a directory exists, pulling latest..."
+  PRE_HEAD=$(cd "$CLADE_REPO_DIR" && git rev-parse HEAD 2>/dev/null || echo "")
   (cd "$CLADE_REPO_DIR" && git pull --ff-only) || warn "git pull failed; using existing checkout"
+  POST_HEAD=$(cd "$CLADE_REPO_DIR" && git rev-parse HEAD 2>/dev/null || echo "")
+  if [[ -n "$PRE_HEAD" && "$PRE_HEAD" != "$POST_HEAD" ]]; then
+    info "pull dovukao nove commit-e ($PRE_HEAD → $POST_HEAD), reinstall venv-a..."
+    NEEDS_REINSTALL=1
+  fi
 fi
 
 CLADE_PYTHON="$CLADE_REPO_DIR/.venv/bin/python"
@@ -72,8 +80,12 @@ if [[ ! -x "$CLADE_PYTHON" ]]; then
   info "Creating venv + installing clade-a2a..."
   (cd "$CLADE_REPO_DIR" && "$UV" venv && "$UV" pip install -e .)
   ok "clade-a2a installed"
+elif [[ "$NEEDS_REINSTALL" == "1" ]]; then
+  info "Re-running pip install -e . (pull-ovan nov kod)..."
+  (cd "$CLADE_REPO_DIR" && "$UV" pip install -e .)
+  ok "clade-a2a re-installed sa novim kodom"
 else
-  ok "clade-a2a venv exists at $CLADE_PYTHON"
+  ok "clade-a2a venv exists at $CLADE_PYTHON (nije bilo promena)"
 fi
 
 # --- Download peer config + start script ---

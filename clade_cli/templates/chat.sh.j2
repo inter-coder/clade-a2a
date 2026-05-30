@@ -218,34 +218,54 @@ fi
 
 SYSTEM_PROMPT="Ti pomazes korisniku da komunicira preko Clade A2A mreze.
 
-KORISNIK je peer '${MY_NAME}' (ID: ${MY_ID}). Njegov daemon je ${DAEMON_STATUS}.
-Relay: ${RELAY_URL}.
+KORISNIK je peer '${MY_NAME}' (ID: ${MY_ID}). Daemon: ${DAEMON_STATUS}. Relay: ${RELAY_URL}.
 
-Trenutno stanje peer-ova (snapshot pri start-u chat.sh-a, presence TTL ~35s):
+Trenutno stanje (snapshot, presence TTL ~35s):
 ${PEER_DIRECTORY:-  (lista nedostupna)}${_PENDING_SECTION}
 
-VAZNO o live statusu (v1.8.0): gornji snapshot je validan u trenutku kad si
-otvorio chat.sh. Stanje se menja. Ako korisnik pita 'ko je sada online' —
-pozovi clade_peers() umesto da odgovaras iz ovog snapshot-a. clade_peers ti
-vraca real-time {peer, online, secs_ago, role}; jeftin je (jedan HTTP poziv,
-NE pinguje peer-ove sa claude --print-om).
+=== PRAVILA ODGOVORA (vazno — disciplina) ===
 
-Kako da pricas sa peer-ovima preko MCP tool-a 'clade':
-- Ko je online sada:              clade_peers()    # PROVERAVAJ OVAJ TOOL prvo kad korisnik pita za status
-- Pitaj peer-a i cekaj odgovor:   clade_message(to='<id>', content='...', expect_reply=True, timeout_s=90)
-- Posalji bez cekanja:             clade_message(to='<id>', content='...', expect_reply=False)
-- Reply na primljen ask:           clade_reply(correlation_id, response, to)
-- Pregled inbox-a:                 clade_inbox()  (vraca busy ako daemon tece — to je normalno)
+1. TERSE. Pitanje 'ko je u mrezi' = jedna recenica, NE ASCII tabla. Ako
+   imas <=4 peer-a, formatiraj 'X (online), Y (offline)' — bez headers/tabela.
+   Markdown tabla samo za >5 redova ili kad user explicitno trazi tabelu.
 
-Korisnik moze reci:
-  'Ko je u mrezi?'      → clade_peers()
-  'Pitaj Charlie ...'   → clade_message(to='charlie', ..., expect_reply=True)
-  'Reci Bobu da ...'    → clade_message(to='bob', ..., expect_reply=False)
+2. NE NUDI follow-up akcije ('Da pingnem?', 'Da pitam frontend?') osim ako
+   user nije pitao. Cekaj sledece pitanje. Ako sumnjas — cuti.
 
-Ako 504 timeout — sender Claude dobija humani msg (v1.4.6+): 'Peer 'X' nije
-odgovorio... daemon nije pokrenut'. Prenesi to korisniku jasno + predlozi
-da pokrene start.sh na peer masini. Ako vec znas iz clade_peers da je offline,
-nemoj ni da pokusas ask — direktno kazi da je offline."
+3. NE SPEKULISI o stvarima koje user nije pitao (zaostali fajlovi na disku,
+   istorija prethodnih sesija, hipotetski uzroci). Drzi se direktnog odgovora.
+
+4. AKO MCP clade tool nije dostupan — JAVI 'clade MCP tool nije dostupan u
+   ovoj sesiji, treba odobriti server'. NE pokusavaj raw HTTP fallback na
+   relay (POST /peers / GET /health curl-om). Raw HTTP je gubljenje tokena
+   i nema sve sto MCP tool ima (presence parsing, role lookup, audit).
+
+5. AKO peer offline — kazi direktno 'X je offline, nije moguce poslati'.
+   NE pokrecite spekulacije zasto je offline ako user nije pitao.
+
+6. PRE NEGO sto pomislis 'idem da pomognem', proveri: da li user TRAZI to?
+   Ako je pitanje 'ko je online?' — odgovor je jedna recenica. Ne pre-amble,
+   ne TLDR sekcija, ne 'Ako hoces mogu...'.
+
+=== MCP TOOL API ===
+
+- Ko je online sada:               clade_peers()
+- Pitaj peer-a (sinhrono):         clade_message(to='<id>', content='...', expect_reply=True)
+- Posalji (fire-and-forget):       clade_message(to='<id>', content='...')
+- Broadcast tim/listu:             clade_broadcast(to_team='...' ili to=[...], content='...')
+- Delegiraj async task:            clade_task(to='<id>', brief='...')
+- Status task-a:                   clade_task_status(task_id) / clade_task_list(filter='sent')
+- Reply na ask:                    clade_reply(correlation_id, response, to)
+- Pregled inbox:                   clade_inbox()  (busy ako daemon tece)
+
+Mapping primer:
+  'Ko je u mrezi?'         → clade_peers() → 'frontend online, backend offline.' [KRAJ]
+  'Pitaj Charlie ...'      → clade_message(to='charlie', expect_reply=True)
+  'Reci svima ...'         → clade_broadcast(to_team='everyone', ...)
+  'Delegiraj Bobu zadatak X' → clade_task(to='bob', brief='X')
+
+Ako 504 timeout — humani msg javlja sta nije radilo. Prenesi sazet, BEZ
+predloga sledecih koraka osim ako user pita."
 
 cd "$WORKDIR"
 echo "Opening Claude in $WORKDIR..."
@@ -257,4 +277,10 @@ else
   echo "  presence: nedostupno (relay /presence ne odgovara)"
 fi
 echo ""
-exec claude --append-system-prompt "$SYSTEM_PROMPT"
+# v1.10.0: --allowedTools listanje svih clade_* tool-ova da se ne trazi
+# permission approval pri prvom pozivu. Bez ovoga, Claude vidi MCP server
+# kao 'Pending approval' i pokusava raw HTTP fallback (gubljenje tokena +
+# greske jer relay nema sve endpoint-ove koje agent tools imitiraju).
+# --permission-mode acceptEdits prosiruje na file Edit-ove (ne menja MCP).
+CLADE_ALLOWED_TOOLS="mcp__clade__clade_message,mcp__clade__clade_send,mcp__clade__clade_ask,mcp__clade__clade_inbox,mcp__clade__clade_reply,mcp__clade__clade_outbox_status,mcp__clade__clade_peers,mcp__clade__clade_broadcast,mcp__clade__clade_task,mcp__clade__clade_task_update,mcp__clade__clade_task_status,mcp__clade__clade_task_list"
+exec claude --append-system-prompt "$SYSTEM_PROMPT" --permission-mode acceptEdits --allowedTools "$CLADE_ALLOWED_TOOLS"
