@@ -1069,6 +1069,156 @@ def test_add_peer_hmac_pair_symmetry(tmp_path):
     assert any(p["peer_id"] == "charlie" for p in setup["peers"])
 
 
+def _setup_fixture(tmp_path):
+    """Helper: build a minimal 2-peer setup on disk and return (project_dir, agent_dir)."""
+    import secrets as _secrets, yaml as _yaml, json as _json
+    setup_base = tmp_path / "setup-server"
+    project_dir = setup_base / "test-project"
+    project_dir.mkdir(parents=True)
+    agent_dir = tmp_path / "clade-agent"
+    agent_dir.mkdir()
+    alice_bob = _secrets.token_hex(32)
+    alice_bearer = _secrets.token_urlsafe(32)
+    bob_bearer = _secrets.token_urlsafe(32)
+    for pid, bearer, other_id, other_name in [
+        ("alice", alice_bearer, "bob", "Bob"),
+        ("bob", bob_bearer, "alice", "Alice"),
+    ]:
+        ydata = {
+            "my_id": pid, "name": pid.capitalize(), "role": f"You are {pid}",
+            "relay_url": "http://127.0.0.1:7777", "bearer_token": bearer,
+            "peers": {other_id: {"secret": alice_bob, "name": other_name, "role": f"You are {other_id}"}},
+            "audit_db": f"~/.clade/{pid}-audit.db",
+            "teams": {"team1": ["alice", "bob"]},
+            "extra_add_dirs": [],
+        }
+        for base in (agent_dir, project_dir):
+            (base / f"{pid}.yaml").write_text(_yaml.dump(ydata))
+    (project_dir / "tokens.json").write_text(_json.dumps({alice_bearer: "alice", bob_bearer: "bob"}))
+    (project_dir / "setup.json").write_text(_json.dumps({
+        "version": 1, "project_name": "test", "project_token": "test-project",
+        "relay_url": "http://127.0.0.1:7777", "relay_host_bind": "0.0.0.0",
+        "relay_port": 7777, "tokens_path": str(project_dir / "tokens.json"),
+        "relay_was_started": False,
+        "peers": [
+            {"peer_id": "alice", "display_name": "Alice", "role": "You are alice",
+             "download_token": "td1", "bearer_token": alice_bearer,
+             "yaml_path": str(project_dir / "alice.yaml"), "yaml_content": ""},
+            {"peer_id": "bob", "display_name": "Bob", "role": "You are bob",
+             "download_token": "td2", "bearer_token": bob_bearer,
+             "yaml_path": str(project_dir / "bob.yaml"), "yaml_content": ""},
+        ],
+    }))
+    return project_dir, agent_dir
+
+
+def test_update_peer_op_changes_role_and_propagates_to_other_yamls(tmp_path):
+    """v1.12.0: update_peer_op updates target's own yaml AND every other peer's
+    peers.<target>.role field (since those are display copies for system prompts)."""
+    import yaml as _yaml
+    from clade_cli.peer_ops import update_peer_op
+
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    result = update_peer_op(
+        project_dir=project_dir, agent_dir=agent_dir,
+        peer_id="alice", role="You are alice, SENIOR engineer",
+        display_name="Alice the Senior",
+    )
+    assert result["ok"] is True
+    assert "role" in result["fields_changed"]
+    assert "display_name" in result["fields_changed"]
+    assert "alice" in result["restart_required_for"]
+
+    # Alice's own yaml has the new role
+    alice = _yaml.safe_load((agent_dir / "alice.yaml").read_text())
+    assert "SENIOR engineer" in alice["role"]
+    assert alice["name"] == "Alice the Senior"
+
+    # Bob's yaml has the new alice name + role-snippet in his peers block
+    bob = _yaml.safe_load((agent_dir / "bob.yaml").read_text())
+    assert bob["peers"]["alice"]["name"] == "Alice the Senior"
+    assert "SENIOR engineer" in bob["peers"]["alice"]["role"]
+
+
+def test_update_peer_op_extra_add_dirs(tmp_path):
+    """v1.12.0: extra_add_dirs is owned only by the target peer (not propagated)."""
+    import yaml as _yaml
+    from clade_cli.peer_ops import update_peer_op
+
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    update_peer_op(
+        project_dir=project_dir, agent_dir=agent_dir,
+        peer_id="alice", extra_add_dirs=["/tmp/foo", "/var/log"],
+    )
+    alice = _yaml.safe_load((agent_dir / "alice.yaml").read_text())
+    assert alice["extra_add_dirs"] == ["/tmp/foo", "/var/log"]
+
+
+def test_remove_peer_op_cleans_all_references(tmp_path):
+    """v1.12.0: remove_peer_op drops bearer, scrubs target from every other peer's
+    peers + teams, deletes target's files. Audit DB intentionally kept."""
+    import yaml as _yaml, json as _json
+    from clade_cli.peer_ops import add_peer_op, remove_peer_op
+
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    # Need at least 3 peers to remove one (op requires >=2 remaining)
+    add_peer_op(project_dir, agent_dir, peer_id="charlie",
+                display_name="Charlie", role="You are charlie",
+                teams=["team1"])
+    # Sanity: charlie is in everything
+    bob = _yaml.safe_load((agent_dir / "bob.yaml").read_text())
+    assert "charlie" in bob["peers"]
+    assert "charlie" in bob["teams"]["team1"]
+
+    result = remove_peer_op(project_dir, agent_dir, peer_id="charlie")
+    assert result["removed"] == "charlie"
+
+    # Charlie scrubbed from every other yaml's peers + teams
+    for pid in ("alice", "bob"):
+        d = _yaml.safe_load((agent_dir / f"{pid}.yaml").read_text())
+        assert "charlie" not in d.get("peers", {})
+        assert "charlie" not in d.get("teams", {}).get("team1", [])
+
+    # Charlie's files gone
+    assert not (agent_dir / "charlie.yaml").exists()
+    assert not (project_dir / "charlie.yaml").exists()
+    # tokens.json no longer has charlie
+    tokens = _json.loads((project_dir / "tokens.json").read_text())
+    assert "charlie" not in tokens.values()
+    # setup.json no longer has charlie
+    setup = _json.loads((project_dir / "setup.json").read_text())
+    assert all(p["peer_id"] != "charlie" for p in setup["peers"])
+
+
+def test_remove_peer_op_rejects_when_only_2_remain(tmp_path):
+    """v1.12.0: A2A needs at least 2 peers — remove fails if it would leave <2."""
+    from clade_cli.peer_ops import remove_peer_op
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    with pytest.raises(ValueError, match="at least 2 peers"):
+        remove_peer_op(project_dir, agent_dir, peer_id="bob")
+
+
+def test_update_teams_op_validates_membership(tmp_path):
+    """v1.12.0: update_teams_op refuses teams that reference unknown peer ids."""
+    from clade_cli.peer_ops import update_teams_op
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    with pytest.raises(ValueError, match="unknown peers"):
+        update_teams_op(project_dir, agent_dir,
+                        teams={"bogus": ["alice", "nonexistent_ghost"]})
+
+
+def test_update_teams_op_replaces_in_all_yamls(tmp_path):
+    """v1.12.0: PUT-style update writes the SAME teams dict to every yaml."""
+    import yaml as _yaml
+    from clade_cli.peer_ops import update_teams_op
+    project_dir, agent_dir = _setup_fixture(tmp_path)
+    update_teams_op(project_dir, agent_dir,
+                     teams={"team2": ["alice"], "team3": ["bob"]})
+    for pid in ("alice", "bob"):
+        d = _yaml.safe_load((agent_dir / f"{pid}.yaml").read_text())
+        assert d["teams"] == {"team2": ["alice"], "team3": ["bob"]}
+
+
 def test_config_teams_resolve(tmp_path):
     """Config.resolve_team filtrira nepostojece member-e i vraca samo validne."""
     import sys as _sys

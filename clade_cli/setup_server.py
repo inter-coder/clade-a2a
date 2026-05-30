@@ -54,6 +54,8 @@ class PeerInput(BaseModel):
     peer_id: str = Field(..., description="Technical slug for routing (e.g. 'frontend')")
     display_name: str = Field("", description="Display name shown to other agents")
     role: str = Field("", description="Multi-line role prompt")
+    extra_add_dirs: list[str] = Field(default_factory=list,
+                                        description="Paths the daemon-spawned Claude can read outside its workdir")
 
     @field_validator("peer_id")
     @classmethod
@@ -64,6 +66,25 @@ class PeerInput(BaseModel):
         if not all(c.isalnum() or c in "-_" for c in v):
             raise ValueError(f"Invalid peer_id '{v}': only alphanumeric, dash, underscore allowed")
         return v
+
+
+# v1.12.0: per-peer mgmt request bodies
+class AddPeerRequest(BaseModel):
+    peer_id: str
+    display_name: str = ""
+    role: str = ""
+    teams: list[str] = Field(default_factory=list)
+    extra_add_dirs: list[str] = Field(default_factory=list)
+
+
+class UpdatePeerRequest(BaseModel):
+    role: str | None = None
+    display_name: str | None = None
+    extra_add_dirs: list[str] | None = None
+
+
+class UpdateTeamsRequest(BaseModel):
+    teams: dict[str, list[str]]
 
 
 class SetupForm(BaseModel):
@@ -168,12 +189,10 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
         "bearer_token": bearer,
         "peers": peers_dict,
         "audit_db": f"{audit_dir}/{peer.peer_id}-audit.db",
-        # v1.10.2: user prosiruje rucno pre pokretanja daemon-a — putanje koje
-        # daemon-spawn Claude moze da cita van workdir-a. Primer:
-        #   extra_add_dirs:
-        #     - /home/user/projects/foo
-        #     - /var/www/myapp
-        "extra_add_dirs": [],
+        # v1.10.2: paths the daemon-spawned Claude can read outside its workdir.
+        # Editable from the web result page (PATCH /api/setup/{token}/peers/{id})
+        # or directly in this yaml; the daemon reads it at startup.
+        "extra_add_dirs": list(peer.extra_add_dirs or []),
     })
     # v1.9.0: teams su shared kod sve peer-ove — CEO i zaposleni svi imaju isti
     # list "engineering = [alice, bob]" pa svako moze da broadcast-uje grupi.
@@ -446,12 +465,31 @@ def create_app(state: AppState) -> FastAPI:
         setup = state.setups.get(project_token)
         if setup is None:
             raise HTTPException(404, "Setup not found")
+        # v1.12.0: parse extra_add_dirs out of each peer's yaml so the inline
+        # Edit form can pre-fill it. Also extract teams (same across all yamls).
+        peers_data: dict[str, dict] = {}
+        teams_data: dict[str, list[str]] = {}
+        pd = state.data_dir / setup.project_token
+        for pid in setup.peers.keys():
+            yaml_path = pd / f"{pid}.yaml"
+            if yaml_path.exists():
+                try:
+                    d = yaml.safe_load(yaml_path.read_text()) or {}
+                    peers_data[pid] = {
+                        "extra_add_dirs": d.get("extra_add_dirs", []),
+                    }
+                    if not teams_data and d.get("teams"):
+                        teams_data = d["teams"]
+                except Exception:
+                    peers_data[pid] = {"extra_add_dirs": []}
         tmpl = env.get_template("result.html")
         return tmpl.render(
             setup=setup,
             public_url_base=state.public_url_base,
             relay_running=setup.relay_subprocess is not None
                           and setup.relay_subprocess.poll() is None,
+            peers_data=peers_data,
+            teams_data=teams_data,
         )
 
     # v1.7.0 (C4): realtime status JSON za setup result page polling
@@ -548,6 +586,131 @@ def create_app(state: AppState) -> FastAPI:
             "setups": len(state.setups),
             "data_dir": str(state.data_dir),
         }
+
+    # --- v1.12.0: peer management endpoints ---
+
+    def _agent_dir() -> Path:
+        # Single-machine assumption: ~/clade-agent (override via env if needed)
+        return Path(os.environ.get("CLADE_AGENT_DIR", str(Path.home() / "clade-agent")))
+
+    def _project_dir_for(setup: Setup) -> Path:
+        return state.data_dir / setup.project_token
+
+    def _refresh_setup_in_memory(setup: Setup) -> None:
+        """Re-read setup.json + yamls for this setup so in-memory state matches disk."""
+        pd = _project_dir_for(setup)
+        data = json.loads((pd / "setup.json").read_text())
+        new_peers: dict[str, PeerArtifact] = {}
+        new_token_map: dict[str, str] = {}
+        for p in data["peers"]:
+            art = PeerArtifact(
+                peer_id=p["peer_id"], display_name=p["display_name"], role=p["role"],
+                download_token=p["download_token"], bearer_token=p["bearer_token"],
+                yaml_path=Path(p["yaml_path"]), yaml_content=p["yaml_content"],
+            )
+            new_peers[p["peer_id"]] = art
+            new_token_map[p["download_token"]] = p["peer_id"]
+        setup.peers = new_peers
+        setup.download_token_to_peer = new_token_map
+
+    @app.post("/api/setup/{project_token}/peers")
+    async def add_peer(project_token: str, req: AddPeerRequest) -> dict:
+        """v1.12.0: add a new peer to a running setup. Calls peer_ops + refreshes state."""
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        try:
+            from clade_cli.peer_ops import add_peer_op  # noqa: PLC0415
+            result = add_peer_op(
+                project_dir=_project_dir_for(setup),
+                agent_dir=_agent_dir(),
+                peer_id=req.peer_id,
+                display_name=req.display_name or req.peer_id,
+                role=req.role,
+                teams=req.teams,
+                extra_add_dirs=req.extra_add_dirs,
+                relay_url_for_reload=setup.relay_url,
+                setup_server_url_for_reload=None,  # we refresh in-process below
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        _refresh_setup_in_memory(setup)
+        return result
+
+    @app.patch("/api/setup/{project_token}/peers/{peer_id}")
+    async def update_peer(project_token: str, peer_id: str, req: UpdatePeerRequest) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        try:
+            from clade_cli.peer_ops import update_peer_op  # noqa: PLC0415
+            result = update_peer_op(
+                project_dir=_project_dir_for(setup),
+                agent_dir=_agent_dir(),
+                peer_id=peer_id,
+                role=req.role,
+                display_name=req.display_name,
+                extra_add_dirs=req.extra_add_dirs,
+                setup_server_url_for_reload=None,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        _refresh_setup_in_memory(setup)
+        return result
+
+    @app.delete("/api/setup/{project_token}/peers/{peer_id}")
+    async def delete_peer(project_token: str, peer_id: str) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        try:
+            from clade_cli.peer_ops import remove_peer_op  # noqa: PLC0415
+            result = remove_peer_op(
+                project_dir=_project_dir_for(setup),
+                agent_dir=_agent_dir(),
+                peer_id=peer_id,
+                relay_url_for_reload=setup.relay_url,
+                setup_server_url_for_reload=None,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        _refresh_setup_in_memory(setup)
+        return result
+
+    @app.put("/api/setup/{project_token}/teams")
+    async def update_teams(project_token: str, req: UpdateTeamsRequest) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        try:
+            from clade_cli.peer_ops import update_teams_op  # noqa: PLC0415
+            result = update_teams_op(
+                project_dir=_project_dir_for(setup),
+                agent_dir=_agent_dir(),
+                teams=req.teams,
+                setup_server_url_for_reload=None,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Teams don't change peer state; no refresh needed
+        return result
+
+    @app.get("/api/setup/{project_token}/teams")
+    async def get_teams(project_token: str) -> dict:
+        """Read current teams structure from disk (any peer yaml has the same teams)."""
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        if not setup.peers:
+            return {"teams": {}}
+        # Read from first yaml on disk
+        pd = state.data_dir / setup.project_token
+        any_peer = next(iter(setup.peers.keys()))
+        yaml_path = pd / f"{any_peer}.yaml"
+        if not yaml_path.exists():
+            return {"teams": {}}
+        data = yaml.safe_load(yaml_path.read_text()) or {}
+        return {"teams": data.get("teams", {})}
 
     # --- v1.11.0: reload setups from disk (used by clade-add-peer) ---
 

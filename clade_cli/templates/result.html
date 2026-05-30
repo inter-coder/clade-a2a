@@ -209,6 +209,49 @@
       border-left: 3px solid var(--accent);
       border-radius: 0 6px 6px 0;
     }
+    .btn-mini {
+      padding: 0.2rem 0.6rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.78rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-mini:hover { background: var(--code-bg); }
+    .btn-mini-danger { color: #c0392b; }
+    .btn-mini-danger:hover { background: #c0392b; color: white; border-color: #c0392b; }
+    .btn-sm { padding: 0.4rem 0.9rem; font-size: 0.85rem; }
+    .peer-edit-form input[type="text"],
+    .peer-edit-form textarea {
+      width: 100%;
+      padding: 0.4rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      background: var(--surface);
+      color: var(--text);
+      box-sizing: border-box;
+    }
+    .peer-edit-form label {
+      display: block;
+      font-weight: 600;
+      font-size: 0.85rem;
+      margin-bottom: 0.25rem;
+    }
+    .grid { display: grid; gap: 0.75rem; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .field input[type="text"], .field textarea, .field select {
+      width: 100%; padding: 0.5rem 0.7rem; border: 1px solid var(--border);
+      border-radius: 4px; font-family: inherit; font-size: 0.92rem;
+      background: var(--surface); color: var(--text); box-sizing: border-box;
+    }
+    .field label { display: block; font-weight: 600; font-size: 0.88rem; margin-bottom: 0.25rem; color: var(--text); }
+    .field .hint { font-weight: normal; color: var(--text-dim); font-size: 0.78rem; }
+    .toast-success { color: var(--success); }
+    .toast-error   { color: var(--warning); }
   </style>
 </head>
 <body>
@@ -268,16 +311,42 @@
     </div>
 
     <div class="card">
-      <h2>Peer install commands</h2>
+      <h2>Peers <span style="font-size: 0.7em; color: var(--text-dim);">({{ setup.peers|length }})</span></h2>
       {% for peer_id, peer in setup.peers.items() %}
-      <div class="peer-card">
+      <div class="peer-card" data-peer-id="{{ peer_id }}">
         <div class="peer-header">
-          <h3>{{ peer.display_name }}</h3>
-          <span class="peer-id">{{ peer.peer_id }}</span>
+          <h3 class="peer-display-name">{{ peer.display_name }}</h3>
+          <div style="display:flex;gap:0.5rem;align-items:center">
+            <span class="peer-id">{{ peer.peer_id }}</span>
+            <button class="btn-mini" onclick="togglePeerEdit('{{ peer_id }}')">Edit</button>
+            <button class="btn-mini btn-mini-danger" onclick="removePeer('{{ peer_id }}', '{{ peer.display_name|e }}')">Remove</button>
+          </div>
         </div>
         {% if peer.role %}
-        <div class="role-snippet">{{ peer.role }}</div>
+        <div class="role-snippet peer-role-snippet">{{ peer.role }}</div>
         {% endif %}
+
+        <!-- Inline edit form (hidden by default) -->
+        <div class="peer-edit-form" id="edit-{{ peer_id }}" style="display:none;background:var(--code-bg);padding:0.75rem;border-radius:6px;margin:0.75rem 0">
+          <div class="field" style="margin-bottom:0.5rem">
+            <label>Display name</label>
+            <input type="text" name="display_name" value="{{ peer.display_name|e }}">
+          </div>
+          <div class="field" style="margin-bottom:0.5rem">
+            <label>Role</label>
+            <textarea name="role" rows="4">{{ peer.role|e }}</textarea>
+          </div>
+          <div class="field" style="margin-bottom:0.5rem">
+            <label>extra_add_dirs <span class="hint">(one path per line)</span></label>
+            <textarea name="extra_add_dirs" rows="3" placeholder="/home/user/projects/foo">{{ (peers_data.get(peer_id, {}).get('extra_add_dirs', []))|join('\n') }}</textarea>
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+            <button class="btn btn-primary btn-sm" onclick="savePeerEdit('{{ peer_id }}')">Save</button>
+            <button class="btn btn-sm" onclick="togglePeerEdit('{{ peer_id }}')">Cancel</button>
+            <span class="edit-result" style="margin-left:auto;font-size:0.85rem"></span>
+          </div>
+        </div>
+
         <div class="install-block">
           <button class="copy-btn" onclick="copyText(this)">Copy</button>
           <code id="cmd-{{ peer_id }}">curl -fsSL {{ public_url_base }}/agent/{{ peer.download_token }}/install | bash</code>
@@ -291,6 +360,83 @@
         </div>
       </div>
       {% endfor %}
+    </div>
+
+    <!-- Add new peer card -->
+    <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
+      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Add a new peer</h2>
+      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+        Generates HMAC secrets, updates every existing peer's yaml (their daemons hot-reload within ~5s), writes new yaml + scripts + workdir.
+        Only the new peer's daemon needs to be started.
+      </p>
+      <div class="grid grid-2">
+        <div class="field">
+          <label>Peer ID <span class="hint">— slug, [a-z][a-z0-9_-]*</span></label>
+          <input type="text" id="new-peer-id" placeholder="designer" pattern="[a-zA-Z][a-zA-Z0-9_-]*">
+        </div>
+        <div class="field">
+          <label>Display name</label>
+          <input type="text" id="new-peer-display" placeholder="Mira — UX designer">
+        </div>
+      </div>
+      <div class="field" style="margin-top:0.75rem">
+        <label>Role <span class="hint">— what this agent does</span></label>
+        <textarea id="new-peer-role" rows="3" placeholder="You are Mira, UX designer. Specialty: Figma, design systems. Style: visual references when possible."></textarea>
+      </div>
+      <div class="field" style="margin-top:0.75rem">
+        <label>Teams <span class="hint">— check existing or enter comma-separated names to create new</span></label>
+        <div id="new-peer-teams-checks" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem">
+          {% for team_name in teams_data.keys() %}
+          <label style="margin:0;font-weight:normal;display:flex;align-items:center;gap:0.25rem">
+            <input type="checkbox" class="new-peer-team" value="{{ team_name|e }}"> {{ team_name }}
+          </label>
+          {% endfor %}
+          {% if not teams_data %}
+          <span class="hint">(no teams yet — type below to create)</span>
+          {% endif %}
+        </div>
+        <input type="text" id="new-peer-teams-extra" placeholder="extra-team-1, extra-team-2">
+      </div>
+      <div class="field" style="margin-top:0.75rem">
+        <label>extra_add_dirs <span class="hint">— one absolute path per line (optional)</span></label>
+        <textarea id="new-peer-ead" rows="3" placeholder="/home/user/projects/foo&#10;/var/www/myapp"></textarea>
+      </div>
+      <div style="display:flex;gap:0.75rem;align-items:center;margin-top:0.75rem">
+        <button class="btn btn-primary" style="background:#DA7756;color:white;border:none" onclick="addPeer()">Add peer</button>
+        <span id="add-peer-result" style="font-size:0.9rem"></span>
+      </div>
+    </div>
+
+    <!-- Teams card -->
+    <div class="card">
+      <h2>Teams</h2>
+      <p class="hint" style="margin:0 0 0.75rem">Edit team membership. Saves on each change. Daemons hot-reload via config_watcher_loop.</p>
+      <div id="teams-list">
+        {% for team_name, members in teams_data.items() %}
+        <div class="team-row" data-team="{{ team_name|e }}" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap">
+          <strong style="min-width:140px">{{ team_name }}</strong>
+          <div class="team-members" style="display:flex;gap:0.4rem;flex-wrap:wrap">
+            {% for member in members %}
+            <span class="team-chip" data-member="{{ member|e }}" style="background:var(--code-bg);padding:0.2rem 0.6rem;border-radius:999px;font-size:0.85rem;cursor:pointer" title="Click to remove" onclick="removeTeamMember('{{ team_name|e }}', '{{ member|e }}')">{{ member }} ×</span>
+            {% endfor %}
+          </div>
+          <select class="team-add-select" onchange="addTeamMember('{{ team_name|e }}', this.value); this.value=''" style="padding:0.25rem 0.5rem;border-radius:4px;border:1px solid var(--border)">
+            <option value="">+ add member...</option>
+            {% for peer_id in setup.peers.keys() %}
+              {% if peer_id not in members %}
+              <option value="{{ peer_id|e }}">{{ peer_id }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <button class="btn-mini btn-mini-danger" onclick="removeTeam('{{ team_name|e }}')" style="margin-left:auto">Delete team</button>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:0.75rem;display:flex;gap:0.5rem;align-items:center">
+        <input type="text" id="new-team-name" placeholder="new-team-name" style="max-width:200px">
+        <button class="btn btn-secondary" onclick="addTeam()">+ Add team</button>
+        <span id="teams-result" style="margin-left:auto;font-size:0.85rem"></span>
+      </div>
     </div>
 
     <div class="card">
@@ -375,6 +521,163 @@
     }
     refreshStatus();
     pollHandle = setInterval(refreshStatus, 5000);
+
+    // ===========================================================================
+    // v1.12.0: peer management (add / edit / remove + teams)
+    // ===========================================================================
+
+    const PROJECT_TOKEN = '{{ setup.project_token }}';
+
+    function togglePeerEdit(peerId) {
+      const form = document.getElementById('edit-' + peerId);
+      form.style.display = (form.style.display === 'none') ? 'block' : 'none';
+    }
+
+    async function savePeerEdit(peerId) {
+      const form = document.getElementById('edit-' + peerId);
+      const result = form.querySelector('.edit-result');
+      result.textContent = 'Saving...'; result.className = 'edit-result';
+      const body = {
+        display_name: form.querySelector('[name=display_name]').value.trim(),
+        role:         form.querySelector('[name=role]').value,
+        extra_add_dirs: form.querySelector('[name=extra_add_dirs]').value
+                          .split('\n').map(s => s.trim()).filter(Boolean),
+      };
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/peers/${peerId}`, {
+          method: 'PATCH', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        result.textContent = `Saved (restart needed: ${data.restart_required_for.join(', ') || 'none'})`;
+        result.className = 'edit-result toast-success';
+        setTimeout(() => window.location.reload(), 1500);
+      } catch (e) {
+        result.textContent = `Error: ${e.message}`;
+        result.className = 'edit-result toast-error';
+      }
+    }
+
+    async function removePeer(peerId, displayName) {
+      if (!confirm(`Remove peer "${displayName}" (${peerId})?\n\nThis will:\n` +
+                   `- Drop bearer from tokens.json\n` +
+                   `- Update every other peer's yaml (removes ${peerId} from peers + teams)\n` +
+                   `- Delete ${peerId}.yaml + start-${peerId}.sh + chat-${peerId}.sh + workdir-${peerId}/\n` +
+                   `- Kill the daemon if running (lock file PID)\n\n` +
+                   `Audit DB (~/.clade/${peerId}-audit.db) is KEPT.`)) return;
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/peers/${peerId}`, {method: 'DELETE'});
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        alert(`Removed "${peerId}". daemon_killed=${data.daemon_killed}, files_deleted=${data.deleted_files.length}`);
+        window.location.reload();
+      } catch (e) {
+        alert(`Error: ${e.message}`);
+      }
+    }
+
+    async function addPeer() {
+      const pid = document.getElementById('new-peer-id').value.trim();
+      const dn = document.getElementById('new-peer-display').value.trim();
+      const role = document.getElementById('new-peer-role').value.trim();
+      const ead = document.getElementById('new-peer-ead').value
+                    .split('\n').map(s => s.trim()).filter(Boolean);
+      const teams = Array.from(document.querySelectorAll('.new-peer-team:checked')).map(c => c.value);
+      const extraTeams = document.getElementById('new-peer-teams-extra').value
+                            .split(',').map(s => s.trim()).filter(Boolean);
+      teams.push(...extraTeams);
+
+      const result = document.getElementById('add-peer-result');
+      result.textContent = 'Adding...'; result.className = '';
+      if (!pid || !dn || !role) {
+        result.textContent = 'peer_id, display_name and role are required';
+        result.className = 'toast-error';
+        return;
+      }
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/peers`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            peer_id: pid, display_name: dn, role: role,
+            teams: teams, extra_add_dirs: ead,
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        result.textContent = `Added "${pid}" — next step: ${data.next_step}`;
+        result.className = 'toast-success';
+        setTimeout(() => window.location.reload(), 1800);
+      } catch (e) {
+        result.textContent = `Error: ${e.message}`;
+        result.className = 'toast-error';
+      }
+    }
+
+    async function fetchCurrentTeams() {
+      const r = await fetch(`/api/setup/${PROJECT_TOKEN}/teams`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      return d.teams || {};
+    }
+
+    async function saveTeams(teams, resultElem) {
+      resultElem.textContent = 'Saving...'; resultElem.className = '';
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/teams`, {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({teams}),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        resultElem.textContent = 'Saved';
+        resultElem.className = 'toast-success';
+        setTimeout(() => window.location.reload(), 1000);
+      } catch (e) {
+        resultElem.textContent = `Error: ${e.message}`;
+        resultElem.className = 'toast-error';
+      }
+    }
+
+    async function addTeamMember(teamName, peerId) {
+      if (!peerId) return;
+      const teams = await fetchCurrentTeams();
+      teams[teamName] = teams[teamName] || [];
+      if (!teams[teamName].includes(peerId)) teams[teamName].push(peerId);
+      await saveTeams(teams, document.getElementById('teams-result'));
+    }
+
+    async function removeTeamMember(teamName, peerId) {
+      if (!confirm(`Remove ${peerId} from team "${teamName}"?`)) return;
+      const teams = await fetchCurrentTeams();
+      if (teams[teamName]) teams[teamName] = teams[teamName].filter(m => m !== peerId);
+      await saveTeams(teams, document.getElementById('teams-result'));
+    }
+
+    async function addTeam() {
+      const name = document.getElementById('new-team-name').value.trim();
+      const result = document.getElementById('teams-result');
+      if (!name) {
+        result.textContent = 'team name is required';
+        result.className = 'toast-error';
+        return;
+      }
+      const teams = await fetchCurrentTeams();
+      if (teams[name]) {
+        result.textContent = `team "${name}" already exists`;
+        result.className = 'toast-error';
+        return;
+      }
+      teams[name] = [];
+      await saveTeams(teams, result);
+    }
+
+    async function removeTeam(name) {
+      if (!confirm(`Delete team "${name}"? (members stay; only the group goes away)`)) return;
+      const teams = await fetchCurrentTeams();
+      delete teams[name];
+      await saveTeams(teams, document.getElementById('teams-result'));
+    }
   </script>
 </body>
 </html>

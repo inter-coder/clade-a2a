@@ -367,6 +367,10 @@
           <label>Role <span class="hint">— multi-line prompt describing this agent's role/expertise</span></label>
           <textarea name="role" placeholder="You are a frontend developer specializing in React and TypeScript. Style: short concrete answers, link to docs when relevant.">${defaults.role || ''}</textarea>
         </div>
+        <div class="field" style="margin-top: 1rem;">
+          <label>extra_add_dirs <span class="hint">— one absolute path per line; daemon-spawned Claude can read these outside its workdir (optional)</span></label>
+          <textarea name="extra_add_dirs" placeholder="/home/user/projects/foo&#10;/var/www/myapp" rows="3">${(defaults.extra_add_dirs || []).join('\n')}</textarea>
+        </div>
       `;
       container.appendChild(div);
     }
@@ -408,10 +412,13 @@
 
       const peers = [];
       document.querySelectorAll('#peers-container .peer-row').forEach(row => {
+        const ead = row.querySelector('[name=extra_add_dirs]').value
+          .split('\n').map(s => s.trim()).filter(Boolean);
         peers.push({
           peer_id: row.querySelector('[name=peer_id]').value.trim(),
           display_name: row.querySelector('[name=display_name]').value.trim(),
           role: row.querySelector('[name=role]').value,
+          extra_add_dirs: ead,
         });
       });
 

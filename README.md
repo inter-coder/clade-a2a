@@ -15,7 +15,7 @@
 
 ---
 
-**Status:** v1.11.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts) + `--quickstart` one-shot bootstrap + `extra_add_dirs` filesystem access config + `clade-add-peer` surgical peer addition. Production-ready for LAN/VPN; public deploy via Caddy + TLS.
+**Status:** v1.12.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts) + `--quickstart` one-shot bootstrap + `extra_add_dirs` filesystem access config + full web peer management (add / edit / remove + teams) at `/setup/<token>`. Production-ready for LAN/VPN; public deploy via Caddy + TLS.
 
 ---
 
@@ -75,9 +75,30 @@ Optional: before starting daemons you can edit `~/clade-agent/<peer>.yaml`
 to add `extra_add_dirs` (paths the daemon-spawned Claude can read outside
 its workdir — see [Configuration](#configuration)).
 
-### Adding a new peer later
+### Managing the company later
 
-Once the company is running, add a new employee surgically — no daemon restarts:
+Open the result page (`http://<host>:8000/setup/<project_token>`) — it's a
+full management UI as of v1.12.0:
+
+- **Add a new peer** card: fill peer_id / display name / role / teams / extra_add_dirs → Add
+- Each peer card has **Edit** (display name, role, extra_add_dirs) and **Remove** buttons
+- **Teams** card: add / remove members per team, create / delete teams
+
+All operations are surgical — existing daemons hot-reload via `config_watcher_loop` within ~5s (peer allowlist + teams). Only role / display_name / extra_add_dirs changes for a peer's *own* config need that peer's daemon restarted (the field changes are flagged in the response).
+
+REST endpoints under the hood (all under `/api/setup/<project_token>/`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `peers` | Add new peer |
+| PATCH | `peers/{peer_id}` | Edit role / display name / extra_add_dirs |
+| DELETE | `peers/{peer_id}` | Remove peer (drops bearer, scrubs from teams, deletes files, kills daemon if running) |
+| GET | `teams` | Current teams structure |
+| PUT | `teams` | Replace teams structure |
+
+### CLI alternative
+
+Same operations from the terminal:
 
 ```bash
 ./scripts/add-peer.sh designer "Mira — UX designer" \
@@ -482,7 +503,8 @@ Add `--deep` to also wipe `~/.clade/*-audit.db` and `~/clade-agent/`.
 | v1.9.0 | Virtual company: broadcast, teams, async tasks | ✓ |
 | v1.10.0 | Verbosity discipline + MCP auto-trust + install hard-sync | ✓ |
 | v1.10.2 | `extra_add_dirs` config + `--quickstart` flag | ✓ |
-| **v1.11.0** | **`clade-add-peer` surgical peer addition + relay/setup-server reload endpoints** | ✓ |
+| v1.11.0 | `clade-add-peer` surgical peer addition + relay/setup-server reload endpoints | ✓ |
+| **v1.12.0** | **Full web peer management (add / edit / remove + teams) at `/setup/<token>`** | ✓ |
 | v2.x | Persistent task scheduler, CEO dashboard, transparency mode | future |
 
 Details: [`a2a-protocol.md` §11](a2a-protocol.md).
