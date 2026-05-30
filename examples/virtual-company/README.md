@@ -1,132 +1,110 @@
 # Virtual Company example
 
-4-peer mini-firma za demonstraciju **Clade A2A kao orchestration framework**:
+A 4-peer mini-company demonstrating **Clade A2A as an orchestration framework**:
 
 | Peer ID | Display | Role | Team |
 |---|---|---|---|
-| `ceo` | "CEO" | Ti — koordinator i odlučilac. Korisnik vodi ovaj peer interaktivno. | (broadcast only) |
-| `frontend` | "Ana — Frontend dev" | React/TypeScript ekspert, UI/UX | engineering |
-| `backend` | "Bob — Backend dev" | Python/FastAPI/Postgres ekspert | engineering |
+| `ceo` | "CEO" | You — coordinator and decision-maker. Driven interactively. | (broadcasts only) |
+| `frontend` | "Ana — Frontend dev" | React/TypeScript expert | engineering |
+| `backend` | "Bob — Backend dev" | Python/FastAPI/Postgres expert | engineering |
 | `qa` | "Cveta — QA" | Test automation, manual QA, bug triaging | engineering |
 
 Teams:
-- `engineering = [frontend, backend, qa]` — sve sto je dev sastrane
-- `everyone = [frontend, backend, qa]` — all-hands (bez CEO-a, jer CEO šalje)
+- `engineering = [frontend, backend, qa]` — everything dev-side
+- `everyone = [frontend, backend, qa]` — all-hands (without CEO; CEO is the sender)
 
-## Brzo pokretanje
+## Recommended: just run `--quickstart`
 
-### Opcija A — sve na jednoj masini (najlakse za demo)
-
-4 terminala:
+This whole company plus its relay is exactly what `--quickstart` bootstraps:
 
 ```bash
-# Terminal 1: relay
-cd /putanja/do/clade-a2a
-.venv/bin/clade-relay --tokens examples/virtual-company/tokens.json --host 127.0.0.1 --port 7777
+./scripts/start-setup-server.sh --quickstart
+```
 
-# Terminal 2: frontend daemon
-CLADE_CONFIG=examples/virtual-company/frontend.yaml .venv/bin/clade-agent  # wait, daemon ide drugacije
-# Zapravo:
-CLADE_CONFIG=examples/virtual-company/frontend.yaml .venv/bin/python -m agent.daemon --yolo
+The script writes `~/clade-agent/` with one yaml + `start-<peer>.sh` +
+`chat-<peer>.sh` + `workdir-<peer>/` per peer, plus `start.sh` / `chat.sh`
+symlinks (backwards compat). Then it prints the start-daemon commands.
 
-# Terminal 3: backend daemon
-CLADE_CONFIG=examples/virtual-company/backend.yaml .venv/bin/python -m agent.daemon --yolo
+After that, manage the company from `http://<host>:8000/setup/<token>` —
+add/edit/remove peers, edit teams. See the project README for full details.
 
-# Terminal 4: qa daemon
-CLADE_CONFIG=examples/virtual-company/qa.yaml .venv/bin/python -m agent.daemon --yolo
+## Alternative: standalone bootstrap script
 
-# Terminal 5 (CEO interaktivno):
+`bootstrap.sh` (in this directory) generates the same artifacts but
+without using the setup-server. Use it if you want full control or want
+to inspect the generated yamls before installing:
+
+```bash
 cd examples/virtual-company
-CLADE_CONFIG=$(pwd)/ceo.yaml claude --mcp-config $(pwd)/mcp-ceo.json
+./bootstrap.sh
+# Generates tokens.json + ceo/frontend/backend/qa yamls + mcp-ceo.json
+
+# Then 5 terminals:
+../../.venv/bin/clade-relay --tokens $(pwd)/tokens.json --host 127.0.0.1 --port 7777
+CLADE_CONFIG=$(pwd)/frontend.yaml ../../.venv/bin/python -m agent.daemon --yolo
+CLADE_CONFIG=$(pwd)/backend.yaml  ../../.venv/bin/python -m agent.daemon --yolo
+CLADE_CONFIG=$(pwd)/qa.yaml       ../../.venv/bin/python -m agent.daemon --yolo
+CLADE_CONFIG=$(pwd)/ceo.yaml      claude --mcp-config $(pwd)/mcp-ceo.json
 ```
 
-### Opcija B — preko setup-server-a (preporučeno za pravu firmu)
+## Things to try in the CEO session
 
-```bash
-./scripts/start-setup-server.sh
-# Otvori http://127.0.0.1:8000/, ucitaj sa: { "import_example": "virtual-company" }
-# (Manual: dodaj 4 peer-a sa name/role kao iznad + dodaj 2 team-a u Teams sekciji)
-```
+Speak naturally; Claude maps to `clade_*` tools.
 
-## Šta probati u CEO sesiji
+### Who is in the company
+```
+> who is online?
+```
+→ `clade_peers()` returns the table with roles + online status
 
-CEO daje instrukcije prirodnim jezikom; Claude mapira u `clade_*` tool-ove.
+### Broadcast to a team
+```
+> tell engineering: stand-up in 10 minutes
+```
+→ `clade_broadcast(to_team="engineering", content="stand-up in 10 minutes")`
 
-### 1. Ko je u firmi
+### Question to a team, parallel answers
 ```
-> Ko je sve u firmi i ko je online?
+> ask engineering: how long would feature X take?
 ```
-→ `clade_peers()` vraca tabelu sa role-om i online statusom
+→ `clade_broadcast(to_team="engineering", content="...", expect_reply=True)` → CEO gets 3 parallel answers
 
-### 2. Broadcast all-hands
+### Async delegation
 ```
-> Posalji svima u engineering: stand-up za 10 minuta
+> delegate to Ana: refactor LoginPage by Friday
 ```
-→ `clade_broadcast(to_team="engineering", content="stand-up za 10 minuta")`
-
-### 3. Pitanje timu sa odgovorima
-```
-> Pitaj engineering: koliko vremena treba za feature X?
-```
-→ `clade_broadcast(to_team="engineering", content="koliko vremena treba za feature X?", expect_reply=True)`
-→ CEO dobija 3 paralelnih odgovora
-
-### 4. Delegiraj zadatak
-```
-> Delegiraj Ani: refaktor LoginPage komponente do petka
-```
-→ `clade_task(to="frontend", brief="refaktor LoginPage komponente", deadline_ts_ms=...)`
-→ Vraća `task_id`, Ana radi koliko joj treba; CEO posle:
+→ `clade_task(to="frontend", brief="refactor LoginPage", deadline_ts_ms=...)`
+→ returns `task_id`; Ana works as long as she needs. Later:
 
 ```
-> Sta je sa zadatkom <task_id>?
+> what's the status of that task?
+> what are all current open tasks?
 ```
-→ `clade_task_status(task_id)`
+→ `clade_task_status(...)` / `clade_task_list(filter="sent", status="in_progress")`
 
-Ili pregled svih:
+### Direct 1:1 ask (synchronous)
 ```
-> Koje su tekuce zaduzenja?
+> ask Bob: what's the current API rate-limit policy?
 ```
-→ `clade_task_list(filter="sent", status="in_progress")`
+→ `clade_message(to="backend", content="...", expect_reply=True)` — blocks up to 90s
 
-### 5. Direct ask (sinhroni)
+### Fire-and-forget
 ```
-> Pitaj Boba: koja je trenutna API rate-limit politika?
-```
-→ `clade_message(to="backend", content="...", expect_reply=True)` — blokira do 90s
-
-### 6. Fire-and-forget
-```
-> Reci Cveti da je deploy v3.2.0 u produkciji
+> tell Cveta the v3.2.0 deploy is live
 ```
 → `clade_message(to="qa", content="...", expect_reply=False)`
 
-## Struktura fajlova
+## What this DOES show
 
-```
-examples/virtual-company/
-  README.md            ← ovaj fajl
-  tokens.json          ← bearer tokens za relay (jedan po peer-u)
-  ceo.yaml             ← CEO config (peers + teams)
-  frontend.yaml        ← Ana config
-  backend.yaml         ← Bob config
-  qa.yaml              ← Cveta config
-  mcp-ceo.json         ← MCP config za CEO Claude sesiju
-```
+- Multi-peer orchestration with role-aware prompts
+- Broadcast (1 → N in parallel)
+- Async task delegation with local DB persistence
+- Team grouping for one-shot targeting
+- Live presence (who has a running daemon)
 
-Svaki yaml ima isti `teams` blok — svi peer-ovi znaju iste team-ove.
+## What's intentionally out of scope (YAGNI until proven needed)
 
-## Šta ovo POKAZUJE, sta NE
-
-**Pokazuje:**
-- Multi-peer orchestration sa rolama
-- Broadcast (1 → N paralelno)
-- Async task delegation sa lokalnom DB persistence
-- Team grupisanje za jedinstveno targetovanje
-- Live presence (ko je daemon-up sada)
-
-**Ne resava** (skoro je verovatno YAGNI dok ne pukne, ali napomena):
-- Cross-employee transparency (alice ne vidi sta bob radi sa ceo-om)
-- Hierarchy enforcement (svaki peer moze broadcast — ne samo CEO; uloga je samo u prompt-u)
-- Persistent calendar / KPI / performance tracking (tasks tabela je pocetak, ali nije calendar)
-- Long-running task auto-resumption posle daemon restart-a (DB drzi state, ali nema scheduler-a)
+- Cross-employee transparency (Ana can't see what Bob is saying to the CEO)
+- Hierarchy enforcement (any peer can broadcast; role is a prompt convention, not RBAC)
+- Persistent calendar / KPI / performance tracking (the tasks table is a start, not a calendar)
+- Long-running task auto-resumption after daemon restart (DB holds state, but no scheduler picks it back up)

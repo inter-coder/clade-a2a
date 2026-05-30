@@ -373,7 +373,7 @@ Frontend Claude while working: clade_message(to="backend", content="what are the
 
 ## Reference
 
-### Relay REST endpoints (v1.9.0)
+### Relay REST endpoints (v1.11.0)
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -385,11 +385,32 @@ Frontend Claude while working: clade_message(to="backend", content="what are the
 | GET | `/audit` | Bearer | Audit log (last N entries) |
 | POST | `/presence` | Bearer | Heartbeat — daemon calls every 15s **(v1.8.0)** |
 | GET | `/presence` | Bearer | Snapshot of who is online + secs_ago **(v1.8.0)** |
+| POST | `/admin/reload-tokens` | Bearer | Re-read tokens.json from disk **(v1.11.0)** |
 | GET | `/ui/audit` | none | Static HTML viewer |
+
+### Setup-server REST endpoints (v1.12.x)
+
+Read by the web UI; also callable directly for scripting.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | Setup form (HTML) |
+| POST | `/api/setup` | Generate a new setup project (returns 303 → result page) |
+| GET | `/setup/{token}` | Result + management page (HTML) |
+| GET | `/setup/{token}/status` | Live status JSON (relay alive, presence, pending) |
+| GET | `/setup/{token}/install-all` | One-shot bash script that installs every peer locally **(v1.12.1)** |
+| GET | `/agent/{download_token}/install` | Per-peer install bash script |
+| GET | `/agent/{download_token}/{config\|start\|chat\|mcp-config}` | Per-peer artifacts |
+| POST | `/api/setup/{token}/peers` | Add a new peer **(v1.12.0)** |
+| PATCH | `/api/setup/{token}/peers/{peer_id}` | Edit role / display_name / extra_add_dirs **(v1.12.0)** |
+| DELETE | `/api/setup/{token}/peers/{peer_id}` | Remove peer (scrubs + kills daemon) **(v1.12.0)** |
+| GET | `/api/setup/{token}/teams` | Read current teams structure **(v1.12.0)** |
+| PUT | `/api/setup/{token}/teams` | Replace teams structure **(v1.12.0)** |
+| POST | `/admin/reload` | Re-read setups from disk into in-memory state **(v1.11.0)** |
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.9.0). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.12.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 

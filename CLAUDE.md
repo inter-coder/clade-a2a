@@ -1,74 +1,151 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
-## Sta je ovo
+## What this is
 
-Clade A2A — sigurnan A2A message bus za Claude Code instance. Pip paket `clade-a2a`, entry points `clade-relay`, `clade-agent`, `clade-init`. Citaj `README.md` za feature pregled i tri setup mode-a (deploy / wizard / manual).
+Clade A2A — secure A2A message bus for Claude Code instances, plus a virtual
+company orchestration layer on top of it. Pip package `clade-a2a`, entry points:
 
-**Kanonicki protokol je u `a2a-protocol.md` (trenutno v1.2.0)** — single source of truth za envelope schema, HMAC algoritam, MCP tool API, daemon model, file lock semantiku, thread persistence, clarify-back konvenciju, outbox monitor. Kad menjas A2A ponasanje, prvo edituj protokol pa bump verziju (SEMVER pravila u §12 protokola). Ne razbacuj duplikate informacija po CLAUDE.md fajlovima — `clade_cli/init.py` template-i samo referenciraju protokol.
+- `clade-relay` — FastAPI relay (auth + dispatch)
+- `clade-agent` — stdio MCP server (Claude Code spawns it via `.mcp.json`)
+- `clade-init` — legacy bootstrap (still works; superseded by setup-server)
+- `clade-setup-server` — web setup wizard + REST management of peers/teams
+- `clade-add-peer` — surgical peer addition CLI (calls into `clade_cli.peer_ops`)
 
-## Komande
+Read `README.md` for feature overview and the two recommended setup paths
+(web form + `--quickstart`).
+
+**Canonical protocol lives in `a2a-protocol.md` (currently v1.12.x)** — single
+source of truth for envelope schema, HMAC algorithm, MCP tool API, daemon
+model, file lock semantics, presence, teams, tasks, peer-mgmt endpoints. When
+you change A2A behavior, edit the protocol first and bump the version
+(SEMVER rules in §14). Don't duplicate protocol info in CLAUDE.md or
+template files.
+
+## Commands
 
 ```bash
-# Setup (jednom)
+# Setup (once)
 uv venv && uv pip install -e .
 
-# Run tests (17 testova, spawn-uju sopstvenu relay instancu na free port-u)
+# Run tests (62+ tests, each spawns its own relay on a free port)
 ./scripts/test.sh
 # Single test:
 .venv/bin/python -m pytest tests/test_agent_e2e.py::test_clade_message_send_fire_and_forget -v
 
-# Run relay lokalno
+# Run relay standalone
 .venv/bin/clade-relay --tokens relay/tokens.json --host 127.0.0.1 --port 7777
 
 # Build wheel
-.venv/bin/python -m build  # output u dist/
+.venv/bin/python -m build  # output in dist/
 
 # E2E demo (alice ↔ bob, headless)
 ./scripts/start-relay.sh &
 ./scripts/demo-ask-reply.sh
 
-# Lokalni multi-peer wizard / multi-machine deploy
-./scripts/clade-wizard.sh    # 3 terminala na jednoj masini
-./scripts/clade-deploy.sh    # generise scp bundle-ove za vise masina
+# Setup-server (primary user-facing entry point)
+./scripts/start-setup-server.sh                 # blank slate, configure via browser
+./scripts/start-setup-server.sh --quickstart    # auto-bootstrap default 4-peer company
+./scripts/start-setup-server.sh --deep          # full reset (also wipes audit DBs)
 
-# Ako start-<peer>-daemon.sh pukne sa "drugi daemon vec tece":
-./scripts/clade-cleanup.sh   # nadje + ugasi daemon procese, lock + stale PID fajlove
-./scripts/clade-cleanup.sh --dry-run     # samo prikazi sta bi se ugasilo
-./scripts/clade-cleanup.sh --include-relay   # ugasi i relay
+# After setup-server is running, install all peers locally in one shot:
+curl -fsSL http://<host>:8000/setup/<token>/install-all | bash
+
+# Surgically add a 5th peer (no daemon restarts)
+./scripts/add-peer.sh designer "Mira — UX designer" "You are Mira..." --team engineering
+
+# Cleanup orphan state
+./scripts/clade-cleanup.sh                      # show + ask before killing daemons/locks/workdirs
+./scripts/clade-cleanup.sh --dry-run            # just show what would be done
+./scripts/clade-cleanup.sh --include-relay      # also kill any clade-relay processes
+./scripts/clade-cleanup.sh --include-setups     # wipe ~/.clade/setup-server/* (and their relays)
+./scripts/clade-cleanup.sh --prune-audit 7      # drop audit rows older than 7 days + VACUUM
 ```
 
-Nema linter / type-checker konfiguracije. Pre commit-a samo `./scripts/test.sh`.
+No linter / type-checker config. Before commit, just `./scripts/test.sh`.
 
-## Arhitektura (big picture)
+## Architecture (big picture)
 
-Tri komponente, gradjene preko 5 razvojnih faza (vidi `ROADMAP.md`):
+Four components:
 
-1. **`relay/`** — FastAPI dispatcher. Bearer auth + nonce dedup + ts skju validacija. **NE cita HMAC** (E2E je posao receiver-a). Pluggable storage: in-memory ili Redis (`relay/store.py`, biranje preko `REDIS_URL`). `pending_asks` su uvek u memoriji — `asyncio.Future` nije serijabilan; restart fail-uje in-flight asks (svesno).
+1. **`relay/`** — FastAPI dispatcher. Bearer auth + nonce dedup + ts skew
+   validation. **Does NOT validate HMAC** (E2E is the receiver's job).
+   Pluggable storage: in-memory or Redis (`relay/store.py`, picked via
+   `REDIS_URL`). Holds presence (in-memory, 35s TTL) + pending_asks
+   (`asyncio.Future`, non-serializable, lost on restart by design).
 
-2. **`agent/main.py`** — stdio MCP server koji Claude Code spawn-uje preko `.mcp.json`. Implementira `clade_message` (kanonicki tool, v1.0.0+), `clade_inbox`, `clade_reply`, `clade_outbox_status`, plus deprecated `clade_send`/`clade_ask` wrappere (uklanjanje u v2.0.0). HMAC sign/verify, SQLite audit + outbox. Thread persistence helperi: `record_thread_message`, `load_thread_history`, `format_thread_for_prompt` (v1.1.0+).
+2. **`agent/main.py`** — stdio MCP server that Claude Code spawns via
+   `.mcp.json`. Implements 12 `clade_*` tools (message, send, ask, inbox,
+   reply, outbox_status, peers, broadcast, task, task_update, task_status,
+   task_list). HMAC sign/verify, SQLite audit + outbox + thread_history +
+   tasks tables. Config schema in `Config` (PeerInfo, teams, extra_add_dirs).
 
-3. **`agent/daemon.py`** — long-running poller koji peer masina drzi up. Polluje `/inbox` svake 2s, spawn-uje `claude --print --mcp-config <wd>/.mcp.json` za auto-reply na `ask` poruke. **Daemon je single-owner inbox-a** preko file lock-a (`<audit_db_dir>/<peer>-daemon.lock`); `clade_inbox` u agent-u vraca busy error ako lock zivi. Pored poll loop-a vrti i `outbox_monitor_loop` (v1.2.0) koji svakih 30s log-uje + flush-uje stale outbox poruke. Daemon-spawn Claude radi sa minimal headless profilom (env vars + settings.json u workdir-u).
+3. **`agent/daemon.py`** — long-running poller every 2s; spawns
+   `claude --print --mcp-config <wd>/.mcp.json --add-dir <extra>...` for
+   auto-reply to `ask` messages. **Single-owner inbox** via file lock
+   (`<audit_db_dir>/<peer>-daemon.lock`); `clade_inbox` returns busy when
+   lock is alive. Side loops: `outbox_monitor_loop`, `presence_loop`
+   (heartbeat every 15s), `config_watcher_loop` (5s mtime poll, hot-reloads
+   `cfg.peers` + `cfg.teams`).
 
-**`clade_cli/init.py`** generise bootstrap (tokens.json, per-peer YAML, .mcp.json, slim CLAUDE.md, kopija `a2a-protocol.md`). Skripte u `scripts/` (`clade-wizard.sh`, `clade-deploy.sh`) ga koriste kao backend.
+4. **`clade_cli/setup_server.py`** — FastAPI web setup wizard + REST
+   management. Generates tokens.json + per-peer yamls + `.mcp.json`,
+   spawns relay subprocess. Exposes:
+   - Form at `/` (POST `/api/setup`)
+   - Result/management page at `/setup/{token}` + JSON status
+   - Per-peer install endpoints `/agent/{download_token}/{install|config|start|chat|mcp-config}`
+   - Bulk install: `/setup/{token}/install-all` (returns bash script)
+   - Mgmt: `POST/PATCH/DELETE /api/setup/{token}/peers[/{peer_id}]`,
+     `GET/PUT /api/setup/{token}/teams`, `POST /admin/reload`
+   - Actual peer ops in `clade_cli/peer_ops.py` (`add_peer_op`,
+     `update_peer_op`, `remove_peer_op`, `update_teams_op`); CLI
+     (`clade-add-peer`) is a thin wrapper around the same module.
 
-**Outbox** (`agent/outbox.py`) je SQLite tabela u istom DB-u sa audit log-om. Backoff schedule `[1,2,4,8,16,30]` sekundi × max 6 pokusaja → dead-letter. Fire-and-forget send/reply na network error ili 5xx automatski ide u outbox; sledeci tool poziv lazy-flush-uje. **Sinhroni `clade_message(expect_reply=True)` NE ide u outbox** — korisnik retry.
+**Outbox** (`agent/outbox.py`) — SQLite table in the same DB as audit log.
+Backoff `[1,2,4,8,16,30]`s × max 6 attempts → dead-letter. Fire-and-forget
+send/reply on network error or 5xx auto-queues; next tool call lazy-flushes.
+**Synchronous `clade_message(expect_reply=True)` does NOT queue** — the user
+retries.
 
-## Konvencije
+## Conventions
 
-- **Jezik:** kod, komentari, log poruke, docstring-ovi na srpskom latinica **bez dijakritike** ("sta", "moze", "vec" — ne "šta/može/već"). Markdown narativni delovi mogu sa dijakritikom. Identifikatori su engleski.
-- **Komentari:** pisi *zasto*, ne *sta*. Ako nesto izgleda neobicno (npr. zasto `pending_asks` ostaje u memoriji), objasni razlog. Nema komentara koji ponavljaju kod.
-- **Phase tracking:** module docstring-ovi nose "Faza X" labelu kad se uvodi nova funkcionalnost (`Faza 2`, `Faza 4 — ovaj fajl`). Novi protokol uvodi paralelno SEMVER (`v1.0.0` u docstring-u + bump u `a2a-protocol.md` §11).
-- **Backwards-compat:** API breaking change-evi (npr. uklanjanje `clade_send`/`clade_ask`) najavljuju se bar jedan minor pre uklanjanja. Wrapperi koji warn u stderr su prihvatljivi most.
+- **Language:** code, comments, log messages, docstrings in **English**
+  (project-wide policy as of v1.10.x; older code may still be in Serbian
+  latinica without diacritics — translate opportunistically).
+- **Comments:** explain *why*, not *what*. Only when something is non-obvious
+  (e.g. why `pending_asks` stays in-memory). No comments that paraphrase
+  the code.
+- **Phase tracking:** module docstrings carry "Phase X" / "v1.x.0" labels
+  when introducing new functionality. Protocol bumps go in
+  `a2a-protocol.md` §11 with a one-line summary.
+- **Backwards compat:** API breaking changes (e.g. removing `clade_send` /
+  `clade_ask`) announced at least one minor before removal. Wrappers that
+  print a stderr warning are an acceptable bridge.
 
-## Cesti zamke
+## Common gotchas
 
-- **Daemon i Claude konkurentno u inbox-u:** ne pozivaj `clade_inbox` u kodu/CLAUDE.md kad daemon tece — vratice busy. To je *feature* (file lock §6 protokola), ne bug.
-- **HMAC mismatch izmedju peer-ova:** shared secret mora biti IDENTICAN u oba `<peer>.yaml` fajla pod uzajamnim kljucevima (alice.yaml `peers.bob` == bob.yaml `peers.alice`). `clade_cli/init.py` to garantuje za novi bootstrap; ako ručno menjas, proveri.
-- **Replay / clock skew:** nonce + ts ±5min. Ako test-ovi flap-uju na timestamp gresci, problem je NTP ne kod.
-- **Tests reload-uju agent.main:** zbog import-time config load-a, testovi koriste `_load_agent_module(config_path)` koji pop-uje iz `sys.modules` pre re-importa. Drzi taj pattern kad dodajes nove testove sa drugacijim configs.
+- **Daemon and Claude concurrent on inbox:** never call `clade_inbox`
+  from prompts when a daemon is running — it returns a busy error. That's
+  a *feature* (file lock §6 of the protocol), not a bug.
+- **HMAC mismatch between peers:** shared secret must be IDENTICAL in both
+  `<peer>.yaml` files under the reciprocal key (alice.yaml `peers.bob` ==
+  bob.yaml `peers.alice`). Setup-server and `peer_ops` guarantee this; if
+  you hand-edit yamls, verify.
+- **Replay / clock skew:** nonce + ts ±5min. If tests flap on a timestamp
+  error, it's NTP, not the code.
+- **Tests reload `agent.main`:** because of import-time config load, tests
+  use `_load_agent_module(config_path)` which pops from `sys.modules`
+  before re-importing. Keep that pattern when adding new tests with a
+  different config.
+- **Cached bearer in long-running daemons:** the daemon loads
+  `bearer_token` at startup and keeps it in memory. If you regenerate
+  tokens (e.g. setup-server restart), running daemons keep sending the
+  old bearer and get 401. Quickstart wipes `~/clade-agent/` to prevent
+  this; for manual flows, restart the daemon after token changes.
 
-## Otvorene tacke
+## Open items
 
-`samozapazanja.md` u root-u sadrzi peer-to-peer dijalog izmedju dva A2A agenta o sledecim iteracijama. P0 → v1.0.0, P1 → v1.1.0, P2 → v1.2.0. Sve tri faze samozapazanja isporucene. Sledece: stvarni feedback iz produkcije (Faza 3 — Predrag/Katana).
+`samozapazanja.md` (root) contains peer-to-peer dialog between two A2A
+agents from earlier iterations. Phases v1.0.0 → v1.2.0 delivered.
+Production feedback from Predrag/Katana still pending.
