@@ -109,10 +109,19 @@ ok "Downloaded chat.sh"
 mkdir -p "workdir-${PEER_ID}"
 curl -fsSL -o "workdir-${PEER_ID}/.mcp.json" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/mcp-config"
 
-# Substitute $HOME placeholder so the path is concrete on this machine
-sed -i.bak "s|\\$HOME/clade-agent|$AGENT_DIR|g" "workdir-${PEER_ID}/.mcp.json"
+# Substitute $HOME placeholder so the path is concrete on this machine.
+# Note: in bash double-quotes, \\$HOME becomes \$HOME (literal), which sed
+# never matches against the actual `$HOME` string in the file. Use a
+# different delimiter (#) and \$ inside double quotes so bash leaves the
+# dollar alone and sed sees `$HOME` as a literal pattern.
+sed -i.bak "s#\$HOME/clade-agent#${AGENT_DIR}#g" "workdir-${PEER_ID}/.mcp.json"
 rm -f "workdir-${PEER_ID}/.mcp.json.bak"
-ok "Created workdir-${PEER_ID}/ with .mcp.json"
+# Sanity: $HOME placeholder must be gone. If sed silently no-op-ed, the MCP
+# server would fail to load CLADE_CONFIG with cryptic -32000 error in claude /mcp.
+if grep -q '\$HOME' "workdir-${PEER_ID}/.mcp.json"; then
+  fail "sed substitution failed: \$HOME placeholder still in workdir-${PEER_ID}/.mcp.json"
+fi
+ok "Created workdir-${PEER_ID}/ with .mcp.json (CLADE_CONFIG=${AGENT_DIR}/${PEER_ID}.yaml)"
 
 # --- Sanity check: can we reach the relay? ---
 info "Verifying relay reachability..."
