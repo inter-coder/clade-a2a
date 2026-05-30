@@ -310,6 +310,23 @@
       {% endif %}
     </div>
 
+    <!-- v1.12.1: one-shot multi-peer installer -->
+    <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
+      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Install all peers on this machine</h2>
+      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+        Single-machine setup? Run one command to install every peer locally (writes
+        <code>~/clade-agent/&lt;peer&gt;.yaml</code> + scripts for each).
+        For multi-machine deploys use the per-peer install commands below instead.
+      </p>
+      <div class="install-block">
+        <button class="copy-btn" onclick="copyText(this)">Copy</button>
+        <code id="cmd-install-all">curl -fsSL {{ public_url_base }}/setup/{{ setup.project_token }}/install-all | bash</code>
+      </div>
+      <div class="links" style="margin-top:0.5rem">
+        <a href="/setup/{{ setup.project_token }}/install-all" target="_blank">install-all.sh (preview)</a>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Peers <span style="font-size: 0.7em; color: var(--text-dim);">({{ setup.peers|length }})</span></h2>
       {% for peer_id, peer in setup.peers.items() %}

@@ -45,35 +45,49 @@ clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
 
 ## Quick start — virtual company in 60 seconds
 
-The fastest path is `--quickstart`, which spawns the setup server, posts the
-virtual-company template, installs all 4 peers locally, and prints the next
-commands for you:
+Two paths, pick what fits:
+
+### Path 1 — fully from the web (recommended for custom companies)
 
 ```bash
-# Install
 git clone https://github.com/inter-coder/clade-a2a.git && cd clade-a2a
 uv venv && uv pip install -e .
 
-# One-shot bootstrap (CEO + frontend + backend + qa + engineering team)
+./scripts/start-setup-server.sh
+# Open http://<your-host>:8000/ in a browser
+```
+
+In the form:
+1. (Optional) **Load virtual-company template** — pre-fills CEO + frontend + backend + qa + engineering team
+2. Add / edit / remove peers; set roles, teams, `extra_add_dirs`
+3. **Generate Setup** → redirected to the result page
+4. On the result page, copy the **"Install all peers on this machine"** one-liner:
+   ```bash
+   curl -fsSL http://<your-host>:8000/setup/<token>/install-all | bash
+   ```
+   Run it once — every peer's yaml + scripts + workdir are written to `~/clade-agent/`.
+5. Start the daemons (one terminal per peer):
+   ```bash
+   ~/clade-agent/start-frontend.sh --yolo
+   ~/clade-agent/start-backend.sh  --yolo
+   ~/clade-agent/start-qa.sh       --yolo
+   ```
+6. Open a coordinator session (the CEO, or any peer you want to drive):
+   ```bash
+   ~/clade-agent/chat-ceo.sh
+   ```
+
+After that the result page is your **management console** — add / edit / remove peers, edit teams, all in-browser (changes hot-reload via `config_watcher_loop` within ~5s, no daemon restarts).
+
+### Path 2 — single-command bootstrap (default 4-peer template)
+
+If you just want the standard CEO + frontend + backend + qa template without touching the form:
+
+```bash
 ./scripts/start-setup-server.sh --quickstart
 ```
 
-The script writes per-peer scripts to `~/clade-agent/` and prints the
-commands you need next. Open new terminals and run:
-
-```bash
-# Three employee daemons (one terminal each)
-~/clade-agent/start-frontend.sh --yolo
-~/clade-agent/start-backend.sh  --yolo
-~/clade-agent/start-qa.sh       --yolo
-
-# CEO interactive session (fourth terminal)
-~/clade-agent/chat-ceo.sh
-```
-
-Optional: before starting daemons you can edit `~/clade-agent/<peer>.yaml`
-to add `extra_add_dirs` (paths the daemon-spawned Claude can read outside
-its workdir — see [Configuration](#configuration)).
+Equivalent to Path 1 with the template loaded and install-all run automatically. Skips the browser step.
 
 ### Managing the company later
 

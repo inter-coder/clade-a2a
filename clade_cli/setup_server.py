@@ -541,6 +541,40 @@ def create_app(state: AppState) -> FastAPI:
             peer=peer, setup=setup, public_url_base=state.public_url_base,
         )
 
+    # v1.12.1: one-shot multi-peer installer (parity with --quickstart's local install loop)
+    @app.get("/setup/{project_token}/install-all", response_class=PlainTextResponse)
+    async def install_all_script(project_token: str) -> str:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        lines = [
+            "#!/bin/bash",
+            "# Install all peers of this setup on the current machine.",
+            f"# Project: {setup.project_name}",
+            f"# Setup-server: {state.public_url_base}",
+            "set -e",
+            "",
+            "GREEN='\\033[0;32m'; CYAN='\\033[0;36m'; NC='\\033[0m'",
+            "info()  { echo -e \"${CYAN}==>${NC} $*\"; }",
+            "ok()    { echo -e \"${GREEN}\\u2713${NC} $*\"; }",
+            "",
+        ]
+        for peer in setup.peers.values():
+            lines.append(f"info \"installing peer '{peer.peer_id}' ({peer.display_name})...\"")
+            lines.append(f'curl -fsSL "{state.public_url_base}/agent/{peer.download_token}/install" | bash')
+            lines.append(f"ok \"{peer.peer_id} done\"")
+            lines.append("")
+        lines.append("echo ''")
+        lines.append('echo "All peers installed. Start daemons (one terminal each):"')
+        for peer in setup.peers.values():
+            lines.append(f'echo "  $HOME/clade-agent/start-{peer.peer_id}.sh --yolo"')
+        lines.append('echo ""')
+        lines.append('echo "And open one CEO/coordinator chat (pick a peer to be your interactive seat):"')
+        # Heuristic: if there's a 'ceo' peer, suggest it; else suggest the first peer
+        ceo_id = "ceo" if "ceo" in setup.peers else next(iter(setup.peers))
+        lines.append(f'echo "  $HOME/clade-agent/chat-{ceo_id}.sh"')
+        return "\n".join(lines) + "\n"
+
     @app.get("/agent/{token}/config", response_class=PlainTextResponse)
     async def peer_yaml(token: str) -> str:
         peer, _setup = _find_peer_by_token(state, token)
