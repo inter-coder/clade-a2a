@@ -1,0 +1,7 @@
+# Bootstrap-generated secrets (regeneriši sa ./bootstrap.sh)
+tokens.json
+ceo.yaml
+frontend.yaml
+backend.yaml
+qa.yaml
+mcp-ceo.json

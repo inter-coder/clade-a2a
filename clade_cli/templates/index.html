@@ -277,6 +277,13 @@
         <button type="button" class="add-peer" onclick="addPeer()">+ Add peer</button>
       </div>
 
+      <div class="card">
+        <h2>Teams <span class="hint" style="font-weight: normal;">— optional, for clade_broadcast(to_team=...)</span></h2>
+        <p class="hint" style="margin-top: 0;">Group peers into teams so the CEO can broadcast to "engineering" or "marketing" instead of listing each peer.</p>
+        <div id="teams-container"></div>
+        <button type="button" class="add-peer" onclick="addTeam()">+ Add team</button>
+      </div>
+
       <div class="actions">
         <button type="button" class="btn btn-secondary" onclick="window.location.reload()">Reset</button>
         <button type="submit" class="btn btn-primary">Generate Setup</button>
@@ -333,18 +340,52 @@
       btn.closest('.peer-row').remove();
     }
 
+    let teamCount = 0;
+    function addTeam(defaults) {
+      defaults = defaults || {};
+      teamCount++;
+      const container = document.getElementById('teams-container');
+      const div = document.createElement('div');
+      div.className = 'peer-row';
+      div.innerHTML = `
+        <div class="header-row">
+          <strong>Team ${teamCount}</strong>
+          <button type="button" class="btn btn-danger" onclick="this.closest('.peer-row').remove()">Remove</button>
+        </div>
+        <div class="grid grid-2">
+          <div class="field">
+            <label>Team name <span class="hint">— used in clade_broadcast(to_team=...)</span></label>
+            <input type="text" name="team_name" value="${defaults.team_name || ''}" placeholder="engineering" pattern="[a-zA-Z][a-zA-Z0-9_-]*">
+          </div>
+          <div class="field">
+            <label>Members <span class="hint">— comma-separated peer IDs</span></label>
+            <input type="text" name="team_members" value="${defaults.team_members || ''}" placeholder="frontend, backend">
+          </div>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
     document.getElementById('setup-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const errorEl = document.getElementById('error');
       errorEl.style.display = 'none';
 
       const peers = [];
-      document.querySelectorAll('.peer-row').forEach(row => {
+      document.querySelectorAll('#peers-container .peer-row').forEach(row => {
         peers.push({
           peer_id: row.querySelector('[name=peer_id]').value.trim(),
           display_name: row.querySelector('[name=display_name]').value.trim(),
           role: row.querySelector('[name=role]').value,
         });
+      });
+
+      const teams = {};
+      document.querySelectorAll('#teams-container .peer-row').forEach(row => {
+        const tname = row.querySelector('[name=team_name]').value.trim();
+        const tmembers = row.querySelector('[name=team_members]').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        if (tname && tmembers.length > 0) teams[tname] = tmembers;
       });
 
       const payload = {
@@ -354,6 +395,7 @@
         relay_port: parseInt(document.getElementById('relay_port').value, 10),
         start_relay: document.getElementById('start_relay').checked,
         peers,
+        teams,
       };
 
       try {

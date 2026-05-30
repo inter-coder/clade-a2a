@@ -54,13 +54,18 @@ class Config(BaseModel):
     """Per-agent config (v1.3.0+ ima name + role + per-peer info).
 
     Backward compat: peers moze biti dict[str, str] (stari format gde value je
-    samo HMAC secret) ILI dict[str, dict] (novi format sa name/role)."""
+    samo HMAC secret) ILI dict[str, dict] (novi format sa name/role).
+
+    v1.9.0: teams (lista peer-ova po imenu) — za clade_broadcast(to_team=...).
+    Virtual company pattern: 'engineering: [alice, bob]' znaci da broadcast ka
+    engineering posalje obojici."""
     my_id: str
     name: str | None = None  # display ime (npr. "Marko Markovic"); default = my_id
     role: str | None = None  # multi-line system prompt opisuje ulogu (v1.3.0+)
     relay_url: str = "http://localhost:7777"
     bearer_token: str
     peers: dict[str, str | PeerInfo] = Field(default_factory=dict)  # peer_id → secret ili PeerInfo
+    teams: dict[str, list[str]] = Field(default_factory=dict)  # team_name → [peer_id]
     audit_db: str = "~/.clade/audit.db"
 
     def peer_secret(self, peer_id: str) -> str | None:
@@ -78,6 +83,15 @@ class Config(BaseModel):
         if isinstance(entry, PeerInfo):
             return entry
         return None
+
+    def resolve_team(self, team_name: str) -> list[str] | None:
+        """v1.9.0: vrati listu peer ID-eva za team, ili None ako team ne postoji.
+        Filtrira member-e koji nisu u peers (silent dropp + log)."""
+        members = self.teams.get(team_name)
+        if members is None:
+            return None
+        valid = [m for m in members if m in self.peers]
+        return valid
 
 
 def load_config() -> Config:
@@ -129,6 +143,27 @@ def _init_audit_db() -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_thread_history_thread
         ON thread_history(thread_id, ts_ms)
+    """)
+    # v1.9.0: tasks tabela za clade_task primitive. Direction "delegated" = ja
+    # poslao zadatak drugome; "assigned" = drugi mi dao zadatak. Status prati
+    # life-cycle (pending → in_progress → done/failed). Result je text payload
+    # (free-form output, vodi peer Claude/user kad markira done).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id TEXT PRIMARY KEY,
+            direction TEXT NOT NULL,
+            peer TEXT NOT NULL,
+            brief TEXT NOT NULL,
+            deadline_ts_ms INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result TEXT,
+            created_ts_ms INTEGER NOT NULL,
+            updated_ts_ms INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_status
+        ON tasks(status, direction, updated_ts_ms)
     """)
     conn.commit()
     # Inicijalizuj outbox tabelu (deli istu DB)
@@ -671,6 +706,9 @@ async def clade_inbox(max_items: int = 50) -> dict[str, Any]:
             continue
         audit_log("in", env["msg_id"], peer, env["kind"], "verified")
         record_thread_message(env["msg_id"], "in", peer, env["kind"], env.get("payload") or {})
+        # v1.9.0: ako poruka sadrzi task flag, persistuj u tasks tabelu
+        # (i dalje vidljiva u messages — Claude vidi text-version, korisnik je svestan)
+        handle_inbound_task_message(env)
         # Cisti za Claude — ne pokazuj HMAC i nonce (tehnicki detalji)
         clean = {
             "msg_id": env["msg_id"],
@@ -827,6 +865,347 @@ async def clade_outbox_status() -> dict[str, Any]:
     return {
         "stats": stats_now,
         "just_flushed": flushed,
+    }
+
+
+# ---- v1.9.0: Broadcast + Teams + Tasks (Virtual Company orchestration) ----
+
+@mcp.tool()
+async def clade_broadcast(
+    content: dict[str, Any] | str,
+    to: list[str] | None = None,
+    to_team: str | None = None,
+    expect_reply: bool = False,
+    timeout_s: int = 90,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """Posalji ISTU poruku ka vise peer-ova paralelno (virtual company pattern).
+
+    Koristi UMESTO N puta clade_message kad CEO/lead salje all-hands ili pita
+    timski isto pitanje. Paralelizam je na sender strani — svaki receiver dobija
+    svoj poseban envelope (sopstveni HMAC, nonce, msg_id). Nema svake-vidi-svaki
+    semantike (peer A ne zna da je B takodje dobio istu poruku).
+
+    Args:
+        content: dict ili string (auto-omota u {"text": content}).
+        to: eksplicitna lista peer ID-eva (npr. ["alice", "bob", "charlie"]).
+        to_team: ime team-a iz cfg.teams (npr. "engineering"). Razresi se u listu.
+                  TACNO JEDNO od to/to_team mora biti dat.
+        expect_reply: True = paralelno cekaj sve reply-eve (svaki sa svojim timeout-om).
+                       False = fire-and-forget svuda.
+        timeout_s: per-peer timeout kad expect_reply=True.
+        thread_id: zajednicki _thread_id za sve peer-ove (npr. naziv meetinga).
+
+    Returns:
+        {
+          "sent": 3, "failed": 0, "total": 3,
+          "results": {
+            "alice": {"ok": True, "msg_id": "...", "response": <ako expect_reply>},
+            "bob":   {"ok": True, "msg_id": "..."},
+            "charlie": {"error": "..."}
+          },
+          "summary": "3/3 ok"
+        }
+    """
+    if (to is None) == (to_team is None):
+        return {"error": "Tacno jedno od `to` (lista) ili `to_team` (string) mora biti dato."}
+
+    if to_team is not None:
+        members = cfg.resolve_team(to_team)
+        if members is None:
+            return {"error": f"Team '{to_team}' ne postoji. Dostupni: {list(cfg.teams)}"}
+        if not members:
+            return {"error": f"Team '{to_team}' nema validne clanove (peers allowlist)."}
+        targets = members
+    else:
+        targets = list(to or [])
+
+    if not targets:
+        return {"error": "Nema target peer-ova."}
+
+    unknown = [p for p in targets if p not in cfg.peers]
+    if unknown:
+        return {"error": f"Nepoznati peer-ovi (nisu u allowlist-u): {unknown}"}
+
+    # Pripremimo payload sa potencijalnim thread_id (deli se izmedju svih)
+    if isinstance(content, str):
+        base_payload: dict[str, Any] = {"text": content}
+    elif isinstance(content, dict):
+        base_payload = dict(content)
+    else:
+        return {"error": f"content mora biti str ili dict, dobio {type(content).__name__}"}
+    if thread_id:
+        base_payload["_thread_id"] = thread_id
+
+    async def _one(peer: str) -> tuple[str, dict[str, Any]]:
+        payload = dict(base_payload)  # svaki peer dobija svoju kopiju (HMAC zavisi)
+        if expect_reply:
+            res = await _do_ask(peer, payload, timeout_s)
+        else:
+            res = await _do_send(peer, payload)
+        return peer, res
+
+    results_pairs = await asyncio.gather(*[_one(p) for p in targets], return_exceptions=False)
+    results = dict(results_pairs)
+    sent = sum(1 for r in results.values() if not r.get("error"))
+    failed = len(results) - sent
+    return {
+        "sent": sent,
+        "failed": failed,
+        "total": len(results),
+        "results": results,
+        "summary": f"{sent}/{len(results)} ok" + (f" ({failed} failed)" if failed else ""),
+        "team": to_team,
+    }
+
+
+# ---- Tasks (v1.9.0) ----
+# Task = async unit posla. Razlika od ask: ask blokira sender-a 90s (sinhroni),
+# task vraca task_id ODMAH, status se proverava posle. Idealno za "uradi mi
+# prezentaciju za sutra" — assignee moze raditi satima, CEO ne ceka.
+#
+# Persistence: SQLite `tasks` tabela u audit_db (per-peer). Obe strane drze
+# svoju kopiju: delegator vidi sa direction="delegated", assignee sa "assigned".
+#
+# Wire format: koristimo postojeci clade_message sa specijalnim payload poljima
+# (`_task: True`, `_task_id`, `_task_update`, etc) tako da NE menjamo envelope
+# schema. Daemon/agent prepoznaje ove flag-ove i radi local tasks-DB update.
+
+_TASK_VALID_STATUSES = {"pending", "in_progress", "done", "failed", "cancelled"}
+
+
+def _task_record(task_id: str, direction: str, peer: str, brief: str,
+                  deadline_ms: int | None, status: str = "pending",
+                  result: str | None = None) -> None:
+    """INSERT ILI UPSERT task u local DB. Idempotent: ako postoji task_id,
+    UPDATE samo status/result/updated_ts (brief/deadline su immutable)."""
+    now = int(time.time() * 1000)
+    cur = _audit_conn.execute("SELECT task_id FROM tasks WHERE task_id = ?", (task_id,))
+    if cur.fetchone():
+        _audit_conn.execute(
+            "UPDATE tasks SET status = ?, result = ?, updated_ts_ms = ? WHERE task_id = ?",
+            (status, result, now, task_id),
+        )
+    else:
+        _audit_conn.execute(
+            """INSERT INTO tasks (task_id, direction, peer, brief, deadline_ts_ms,
+                                   status, result, created_ts_ms, updated_ts_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, direction, peer, brief, deadline_ms, status, result, now, now),
+        )
+    _audit_conn.commit()
+
+
+def _task_row_to_dict(row: tuple) -> dict[str, Any]:
+    return {
+        "task_id": row[0], "direction": row[1], "peer": row[2], "brief": row[3],
+        "deadline_ts_ms": row[4], "status": row[5], "result": row[6],
+        "created_ts_ms": row[7], "updated_ts_ms": row[8],
+    }
+
+
+def handle_inbound_task_message(env: dict[str, Any]) -> bool:
+    """Pozvati iz daemon-a / clade_inbox-a kad stigne poruka. Ako payload ima
+    _task ili _task_update polja, upisi u tasks tabelu i vrati True (poruka
+    obradjena kao task). Inace False — caller nastavlja normalnu obradu."""
+    payload = env.get("payload") or {}
+    if not isinstance(payload, dict):
+        return False
+    from_peer = env.get("from_agent", "")
+
+    if payload.get("_task") is True:
+        # Novo delegirani task ka meni
+        tid = payload.get("_task_id")
+        brief = payload.get("brief") or payload.get("text") or "(prazno)"
+        deadline = payload.get("deadline_ts_ms")
+        if tid:
+            _task_record(tid, "assigned", from_peer, brief, deadline, status="pending")
+            audit_log("in", env.get("msg_id"), from_peer, "task", "received", tid)
+            return True
+
+    if payload.get("_task_update") is True:
+        # Assignee javlja update na task koji sam mu delegirao
+        tid = payload.get("_task_id")
+        status = payload.get("status", "in_progress")
+        result = payload.get("result")
+        if tid and status in _TASK_VALID_STATUSES:
+            _task_record(tid, "delegated", from_peer, "", None, status=status, result=result)
+            # _task_record sa praznim brief-om bi overwrite-ovao postojeci — popravi:
+            now = int(time.time() * 1000)
+            _audit_conn.execute(
+                "UPDATE tasks SET status = ?, result = ?, updated_ts_ms = ? WHERE task_id = ?",
+                (status, result, now, tid),
+            )
+            _audit_conn.commit()
+            audit_log("in", env.get("msg_id"), from_peer, "task_update", status, tid)
+            return True
+
+    return False
+
+
+@mcp.tool()
+async def clade_task(
+    to: str,
+    brief: str,
+    deadline_ts_ms: int | None = None,
+) -> dict[str, Any]:
+    """Delegiraj long-running task peer-u (async, NE blokira). Vraca task_id
+    odmah; assignee radi koliko mu treba, javi nazad sa clade_task_update.
+
+    Razlika od clade_message(expect_reply=True):
+      - ask: blokira sender 90s; failuje za zadatke duze od toga
+      - task: vraca task_id, sender slobodan; assignee javi status kad zeli
+
+    Args:
+        to: peer ID assignee-a (mora biti u allowlist-u)
+        brief: opis zadatka (slobodan tekst, ide u tasks.brief polje i u poruku)
+        deadline_ts_ms: opciono — unix ts u ms kad task treba biti gotov
+
+    Returns:
+        {"ok": True, "task_id": "...", "to": "<peer>", "status": "pending"}
+        ili {"error": "..."} ako peer nepoznat / mreza dole / sl.
+    """
+    err = _check_peer(to)
+    if err:
+        return {"error": err}
+    task_id = str(uuid.uuid4())
+    _task_record(task_id, "delegated", to, brief, deadline_ts_ms, status="pending")
+    payload = {
+        "_task": True,
+        "_task_id": task_id,
+        "brief": brief,
+        "text": f"[TASK delegiran] {brief}",  # daemon ga prikazuje kao normalnu poruku
+    }
+    if deadline_ts_ms:
+        payload["deadline_ts_ms"] = deadline_ts_ms
+    res = await _do_send(to, payload)
+    if res.get("error"):
+        # Markiraj task kao failed pri odustajanju (mreza pukla)
+        _task_record(task_id, "delegated", to, brief, deadline_ts_ms,
+                     status="failed", result=res["error"])
+        return {"error": res["error"], "task_id": task_id}
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "to": to,
+        "status": "pending",
+        "msg_id": res.get("msg_id"),
+        "queued": res.get("queued", False),
+    }
+
+
+@mcp.tool()
+async def clade_task_update(
+    task_id: str,
+    status: str,
+    result: str | None = None,
+) -> dict[str, Any]:
+    """Javi delegator-u (peer-u koji mi je dao zadatak) novi status / result.
+    Koristi se OD STRANE assignee-a (peer-a koji RADI task).
+
+    Args:
+        task_id: ID iz tasks tabele (status assigned)
+        status: jedan od pending|in_progress|done|failed|cancelled
+        result: opcioni text output (npr. URL prezentacije, error opis)
+    """
+    if status not in _TASK_VALID_STATUSES:
+        return {"error": f"status mora biti jedan od {sorted(_TASK_VALID_STATUSES)}"}
+
+    row = _audit_conn.execute(
+        "SELECT task_id, direction, peer, brief, deadline_ts_ms, status, result, "
+        "created_ts_ms, updated_ts_ms FROM tasks WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return {"error": f"task_id '{task_id}' nije u lokalnoj DB (mozda nikad nije ni stigao kao assigned)"}
+    task = _task_row_to_dict(row)
+    if task["direction"] != "assigned":
+        return {"error": f"task {task_id} nije meni dodeljen (direction={task['direction']}) — ne mozes ga update-ovati"}
+
+    delegator = task["peer"]
+    # Lokalni update
+    now = int(time.time() * 1000)
+    _audit_conn.execute(
+        "UPDATE tasks SET status = ?, result = ?, updated_ts_ms = ? WHERE task_id = ?",
+        (status, result, now, task_id),
+    )
+    _audit_conn.commit()
+
+    # Posalji update poruku delegatoru
+    payload = {
+        "_task_update": True,
+        "_task_id": task_id,
+        "status": status,
+        "result": result,
+        "text": f"[TASK update] {task_id[:8]} → {status}" + (f": {result[:100]}" if result else ""),
+    }
+    res = await _do_send(delegator, payload)
+    if res.get("error"):
+        return {"ok": True, "local_status": status, "delegator_notified": False, "send_error": res["error"]}
+    return {"ok": True, "local_status": status, "delegator_notified": True, "msg_id": res.get("msg_id")}
+
+
+@mcp.tool()
+async def clade_task_status(task_id: str) -> dict[str, Any]:
+    """Vrati trenutni status jednog task-a iz lokalne DB."""
+    row = _audit_conn.execute(
+        "SELECT task_id, direction, peer, brief, deadline_ts_ms, status, result, "
+        "created_ts_ms, updated_ts_ms FROM tasks WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return {"error": f"task_id '{task_id}' nije u lokalnoj DB"}
+    return {"ok": True, "task": _task_row_to_dict(row)}
+
+
+@mcp.tool()
+async def clade_task_list(
+    filter: str = "all",
+    status: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Lista task-ova iz lokalne DB.
+
+    Args:
+        filter: 'all' | 'sent' (direction=delegated) | 'received' (direction=assigned)
+        status: opcioni filter po status-u (pending/in_progress/done/failed/cancelled)
+        limit: max broj redova (default 50, najnoviji prvi)
+    """
+    where = []
+    params: list[Any] = []
+    if filter == "sent":
+        where.append("direction = ?")
+        params.append("delegated")
+    elif filter == "received":
+        where.append("direction = ?")
+        params.append("assigned")
+    elif filter != "all":
+        return {"error": "filter mora biti 'all', 'sent' ili 'received'"}
+    if status is not None:
+        if status not in _TASK_VALID_STATUSES:
+            return {"error": f"status mora biti jedan od {sorted(_TASK_VALID_STATUSES)}"}
+        where.append("status = ?")
+        params.append(status)
+    sql = (
+        "SELECT task_id, direction, peer, brief, deadline_ts_ms, status, result, "
+        "created_ts_ms, updated_ts_ms FROM tasks"
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_ts_ms DESC LIMIT ?"
+    params.append(limit)
+    rows = _audit_conn.execute(sql, params).fetchall()
+    tasks = [_task_row_to_dict(r) for r in rows]
+    # Summary po statusu
+    counts: dict[str, int] = {}
+    for t in tasks:
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    return {
+        "ok": True,
+        "tasks": tasks,
+        "count": len(tasks),
+        "by_status": counts,
+        "filter": filter,
     }
 
 

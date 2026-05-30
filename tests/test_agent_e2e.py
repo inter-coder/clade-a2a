@@ -785,3 +785,181 @@ async def test_clade_peers_handles_relay_down(alice_config, monkeypatch):
     assert "error" in res
     # Humani error pominjej relay nedostupnost
     assert "relay" in res["error"].lower() or "connect" in res["error"].lower()
+
+
+# ---- v1.9.0: broadcast + teams + tasks ----
+
+@pytest.mark.asyncio
+async def test_clade_broadcast_to_list_parallel_send(
+    relay_process, alice_config, bob_config,
+):
+    """Broadcast sa eksplicitnom listom — alice salje sebi i bob-u istu poruku.
+    Verifikujemo da rezultat ima per-peer entry + sazet summary."""
+    alice = _load_agent_module(alice_config)
+    res = await alice.clade_broadcast(
+        content={"text": "stand-up za 10 min"},
+        to=["bob"],
+    )
+    assert "error" not in res
+    assert res["sent"] == 1
+    assert res["total"] == 1
+    assert res["failed"] == 0
+    assert "bob" in res["results"]
+    assert res["results"]["bob"].get("ok") is True
+    assert "1/1 ok" in res["summary"]
+
+
+@pytest.mark.asyncio
+async def test_clade_broadcast_to_team_resolves_members(
+    relay_process, alice_config, bob_config,
+):
+    """Broadcast sa to_team — Config.resolve_team mora razresiti
+    'engineering' u listu peer-ova iz cfg.teams."""
+    alice = _load_agent_module(alice_config)
+    # Dodaj team u runtime config (alice yaml nema teams po defaultu u testu)
+    alice.cfg.teams = {"engineering": ["bob"]}
+    res = await alice.clade_broadcast(
+        content="all-hands",
+        to_team="engineering",
+    )
+    assert "error" not in res
+    assert res["team"] == "engineering"
+    assert res["sent"] == 1
+    assert "bob" in res["results"]
+
+
+@pytest.mark.asyncio
+async def test_clade_broadcast_rejects_both_to_and_to_team(alice_config):
+    """Validacija: tacno jedno od to/to_team mora biti dato."""
+    alice = _load_agent_module(alice_config)
+    res = await alice.clade_broadcast(content="x", to=["bob"], to_team="eng")
+    assert "error" in res
+    res2 = await alice.clade_broadcast(content="x")
+    assert "error" in res2
+
+
+@pytest.mark.asyncio
+async def test_clade_broadcast_unknown_team(alice_config):
+    """to_team koji nije u cfg.teams → humani error sa listom dostupnih."""
+    alice = _load_agent_module(alice_config)
+    alice.cfg.teams = {"engineering": ["bob"]}
+    res = await alice.clade_broadcast(content="x", to_team="marketing")
+    assert "error" in res
+    assert "marketing" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_clade_task_lifecycle_delegator_side(
+    relay_process, alice_config, bob_config,
+):
+    """clade_task: vraca task_id odmah, INSERT u local DB sa direction=delegated.
+    clade_task_status to pokaze."""
+    alice = _load_agent_module(alice_config)
+    res = await alice.clade_task(to="bob", brief="refaktor login flow")
+    assert res.get("ok") is True
+    assert "task_id" in res
+    assert res["status"] == "pending"
+    task_id = res["task_id"]
+
+    status = await alice.clade_task_status(task_id)
+    assert status.get("ok") is True
+    assert status["task"]["task_id"] == task_id
+    assert status["task"]["direction"] == "delegated"
+    assert status["task"]["peer"] == "bob"
+    assert status["task"]["status"] == "pending"
+    assert status["task"]["brief"] == "refaktor login flow"
+
+
+@pytest.mark.asyncio
+async def test_clade_task_list_filters(
+    relay_process, alice_config, bob_config,
+):
+    """clade_task_list sa filter='sent' vraca samo delegirane; status='pending' filtrira dalje."""
+    alice = _load_agent_module(alice_config)
+    # Cisti tasks tabelu pre testa (prethodni testovi su mozda upisali)
+    alice._audit_conn.execute("DELETE FROM tasks")
+    alice._audit_conn.commit()
+
+    await alice.clade_task(to="bob", brief="zadatak 1")
+    await alice.clade_task(to="bob", brief="zadatak 2")
+
+    lst = await alice.clade_task_list(filter="sent")
+    assert lst.get("ok") is True
+    assert lst["count"] == 2
+    assert lst["by_status"]["pending"] == 2
+
+    received = await alice.clade_task_list(filter="received")
+    assert received["count"] == 0  # alice je sve poslala, ne primila
+
+
+@pytest.mark.asyncio
+async def test_handle_inbound_task_message_records_assignment(
+    relay_process, bob_config,
+):
+    """Kad bob primi poruku sa _task flag, handle_inbound_task_message
+    INSERT-uje u tasks tabelu sa direction=assigned."""
+    bob = _load_agent_module(bob_config)
+    bob._audit_conn.execute("DELETE FROM tasks")
+    bob._audit_conn.commit()
+
+    fake_env = {
+        "msg_id": "test-msg-id",
+        "from_agent": "alice",
+        "to_agent": "bob",
+        "kind": "send",
+        "payload": {
+            "_task": True,
+            "_task_id": "task-abc-123",
+            "brief": "napravi prezentaciju",
+            "text": "[TASK delegiran] napravi prezentaciju",
+        },
+    }
+    handled = bob.handle_inbound_task_message(fake_env)
+    assert handled is True
+
+    status = await bob.clade_task_status("task-abc-123")
+    assert status.get("ok") is True
+    assert status["task"]["direction"] == "assigned"
+    assert status["task"]["peer"] == "alice"
+    assert status["task"]["status"] == "pending"
+    assert status["task"]["brief"] == "napravi prezentaciju"
+
+
+@pytest.mark.asyncio
+async def test_clade_task_update_only_for_assigned(
+    relay_process, alice_config, bob_config,
+):
+    """clade_task_update odbija ako task nije meni dodeljen (direction=delegated)."""
+    alice = _load_agent_module(alice_config)
+    res = await alice.clade_task(to="bob", brief="x")
+    tid = res["task_id"]
+    # Alice probae da update-uje sopstveni delegated task — to nije njoj dodeljeno
+    upd = await alice.clade_task_update(tid, "in_progress")
+    assert "error" in upd
+    assert "delegated" in upd["error"]
+
+
+def test_config_teams_resolve(tmp_path):
+    """Config.resolve_team filtrira nepostojece member-e i vraca samo validne."""
+    import sys as _sys
+    _sys.modules.pop("agent.main", None)
+    cfg_path = tmp_path / "with_teams.yaml"
+    cfg_path.write_text(
+        "my_id: ceo\n"
+        "bearer_token: x\n"
+        "peers:\n"
+        "  alice: aaaa\n"
+        "  bob: bbbb\n"
+        "teams:\n"
+        "  engineering: [alice, bob, nonexistent]\n"
+        "  empty_team: [nobody_real]\n"
+        f"audit_db: {tmp_path}/x.db\n"
+    )
+    os.environ["CLADE_CONFIG"] = str(cfg_path)
+    import agent.main as main  # noqa: PLC0415
+    eng = main.cfg.resolve_team("engineering")
+    assert eng == ["alice", "bob"]  # nonexistent silently dropped
+    empty = main.cfg.resolve_team("empty_team")
+    assert empty == []
+    missing = main.cfg.resolve_team("marketing")
+    assert missing is None

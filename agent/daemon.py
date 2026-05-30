@@ -600,7 +600,7 @@ async def send_reply(correlation_id: str, response: dict[str, Any],
 
 async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_fn,
                             audit_log_fn, record_thread_fn=None, load_thread_fn=None,
-                            format_thread_fn=None) -> None:
+                            format_thread_fn=None, task_handler_fn=None) -> None:
     from_agent = env["from_agent"]
     kind = env["kind"]
     payload = env["payload"]
@@ -610,6 +610,14 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
     # Record incoming u thread_history (v1.1.0)
     if record_thread_fn:
         record_thread_fn(env["msg_id"], "in", from_agent, kind, payload)
+    # v1.9.0: ako poruka sadrzi _task ili _task_update, persistuj u tasks tabelu
+    # PRE nego sto je daemon proslijedi Claude-u kao ask. Time daemon-spawn
+    # Claude vec ima task u svom DB-u i moze ga referencirati.
+    if task_handler_fn:
+        try:
+            task_handler_fn(env)
+        except Exception as e:
+            log(f"{RED}task_handler greska: {e}{RESET}", "")
 
     # v1.5.0: cancel protokol — sender posaljnao da otkaze tekuci ask
     # v1.7.0 (C2): auth check — samo ORIGINAL sender moze cancel sopstveni ask
@@ -839,7 +847,10 @@ async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
 
     v1.5.0: cancel-poruke (kind=cancel) zaobilaze semafor — kratke su, ne
     spawn-uju claude --print, i moraju biti odmah obradjene."""
-    if env.get("kind") == "cancel" or _claude_semaphore is None:
+    # v1.9.0: send sa _task / _task_update — kratke, bez claude --print, zaobilaze semafor.
+    payload = env.get("payload") or {}
+    is_task_msg = isinstance(payload, dict) and (payload.get("_task") or payload.get("_task_update"))
+    if env.get("kind") == "cancel" or is_task_msg or _claude_semaphore is None:
         await process_message(env, dangerous, workdir, cfg, sign_fn, audit_log_fn, **kwargs)
         return
     async with _claude_semaphore:
@@ -847,7 +858,8 @@ async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
 
 
 async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, audit_log_fn,
-                     record_thread_fn=None, load_thread_fn=None, format_thread_fn=None) -> None:
+                     record_thread_fn=None, load_thread_fn=None, format_thread_fn=None,
+                     task_handler_fn=None) -> None:
     global _claude_semaphore
     _claude_semaphore = asyncio.Semaphore(CLAUDE_CONCURRENCY)
     banner(f"Clade Daemon — my_id={cfg.my_id}")
@@ -894,6 +906,7 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                             record_thread_fn=record_thread_fn,
                             load_thread_fn=load_thread_fn,
                             format_thread_fn=format_thread_fn,
+                            task_handler_fn=task_handler_fn,
                         ))
                         _inflight_tasks.add(task)
                         task.add_done_callback(_inflight_tasks.discard)
@@ -949,6 +962,7 @@ def main() -> None:
         from agent.main import (
             cfg, sign, verify, audit_log,
             record_thread_message, load_thread_history, format_thread_for_prompt,
+            handle_inbound_task_message,
             _audit_conn,
         )
         from agent import outbox as outbox_mod
@@ -1010,6 +1024,7 @@ def main() -> None:
             record_thread_fn=record_thread_message,
             load_thread_fn=load_thread_history,
             format_thread_fn=format_thread_for_prompt,
+            task_handler_fn=handle_inbound_task_message,
         ))
         monitor = asyncio.create_task(outbox_monitor_loop(cfg, _audit_conn, outbox_mod))
         # v1.7.0 (C8): config watcher za hot-reload peer allowlist

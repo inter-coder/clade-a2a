@@ -74,6 +74,8 @@ class SetupForm(BaseModel):
     relay_port: int = Field(7777, ge=1024, le=65535)
     start_relay: bool = Field(True, description="All-in-one: spawn relay subprocess")
     peers: list[PeerInput]
+    # v1.9.0: teams — team_name → lista peer_id-eva. Optional (postoji 0+ teams).
+    teams: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("peers")
     @classmethod
@@ -138,8 +140,9 @@ def _detect_lan_ip() -> str:
 
 def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
                 bearer: str, secret_for_pair: dict[frozenset, str],
-                relay_url: str, audit_dir: str = "~/.clade") -> dict:
-    """Build the per-peer yaml dict (v1.3.0+ schema with PeerInfo)."""
+                relay_url: str, audit_dir: str = "~/.clade",
+                teams: dict[str, list[str]] | None = None) -> dict:
+    """Build the per-peer yaml dict (v1.3.0+ schema with PeerInfo; v1.9.0 teams)."""
     peers_dict: dict[str, Any] = {}
     for other in all_peers:
         if other.peer_id == peer.peer_id:
@@ -166,6 +169,18 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
         "peers": peers_dict,
         "audit_db": f"{audit_dir}/{peer.peer_id}-audit.db",
     })
+    # v1.9.0: teams su shared kod sve peer-ove — CEO i zaposleni svi imaju isti
+    # list "engineering = [alice, bob]" pa svako moze da broadcast-uje grupi.
+    # Filtriramo praznihm/invalid (zaposleni koji ne postoje).
+    if teams:
+        all_ids = {p.peer_id for p in all_peers}
+        valid_teams: dict[str, list[str]] = {}
+        for tname, members in teams.items():
+            valid = [m for m in members if m in all_ids]
+            if valid:
+                valid_teams[tname] = valid
+        if valid_teams:
+            data["teams"] = valid_teams
     return data
 
 
@@ -205,7 +220,8 @@ def _generate_setup(form: SetupForm, data_dir: Path) -> Setup:
 
     # Per-peer yaml
     for peer in form.peers:
-        data = _build_yaml(peer, form.peers, bearers[peer.peer_id], pair_secrets, relay_url)
+        data = _build_yaml(peer, form.peers, bearers[peer.peer_id], pair_secrets, relay_url,
+                            teams=form.teams)
         yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
         yaml_path = project_dir / f"{peer.peer_id}.yaml"
         yaml_path.write_text(yaml_content)
