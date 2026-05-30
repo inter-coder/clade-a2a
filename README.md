@@ -15,7 +15,7 @@
 
 ---
 
-**Status:** v1.10.2 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts) + `--quickstart` one-shot bootstrap + `extra_add_dirs` filesystem access config. Production-ready for LAN/VPN; public deploy via Caddy + TLS.
+**Status:** v1.11.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts) + `--quickstart` one-shot bootstrap + `extra_add_dirs` filesystem access config + `clade-add-peer` surgical peer addition. Production-ready for LAN/VPN; public deploy via Caddy + TLS.
 
 ---
 
@@ -74,6 +74,28 @@ commands you need next. Open new terminals and run:
 Optional: before starting daemons you can edit `~/clade-agent/<peer>.yaml`
 to add `extra_add_dirs` (paths the daemon-spawned Claude can read outside
 its workdir — see [Configuration](#configuration)).
+
+### Adding a new peer later
+
+Once the company is running, add a new employee surgically — no daemon restarts:
+
+```bash
+./scripts/add-peer.sh designer "Mira — UX designer" \
+    "You are Mira, UX designer. Specialty: Figma, design systems." \
+    --team everyone --team engineering
+```
+
+What it does (atomically):
+- Generates HMAC pair-secrets for the new peer × every existing peer
+- Updates every existing `<peer>.yaml` to add the newcomer (daemons hot-reload via `config_watcher_loop` within ~5s)
+- Writes `~/clade-agent/designer.yaml`, `start-designer.sh`, `chat-designer.sh`, `workdir-designer/`
+- Appends to `tokens.json`, calls relay's `POST /admin/reload-tokens` so the new bearer is recognized
+- Calls setup-server's `POST /admin/reload` so the web UI picks up the new peer
+
+Only the new peer's daemon needs to be started:
+```bash
+~/clade-agent/start-designer.sh --yolo
+```
 
 ### Alternative: pre-built example via `bootstrap.sh`
 
@@ -459,7 +481,8 @@ Add `--deep` to also wipe `~/.clade/*-audit.db` and `~/clade-agent/`.
 | v1.8.0 | Presence layer (`clade_peers`, /presence endpoint) | ✓ |
 | v1.9.0 | Virtual company: broadcast, teams, async tasks | ✓ |
 | v1.10.0 | Verbosity discipline + MCP auto-trust + install hard-sync | ✓ |
-| **v1.10.2** | **`extra_add_dirs` config + `--quickstart` flag** | ✓ |
+| v1.10.2 | `extra_add_dirs` config + `--quickstart` flag | ✓ |
+| **v1.11.0** | **`clade-add-peer` surgical peer addition + relay/setup-server reload endpoints** | ✓ |
 | v2.x | Persistent task scheduler, CEO dashboard, transparency mode | future |
 
 Details: [`a2a-protocol.md` §11](a2a-protocol.md).

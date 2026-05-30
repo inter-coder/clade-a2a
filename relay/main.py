@@ -366,6 +366,25 @@ async def get_audit(sender: Annotated[str, Depends(authenticate)], tail: int = 1
     return {"entries": audit[-tail:], "total": len(audit)}
 
 
+@app.post("/admin/reload-tokens")
+async def reload_tokens(_sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
+    """v1.11.0: re-read tokens.json from disk into the in-memory `tokens` dict.
+    Used by clade-add-peer after appending a new bearer — without this, the
+    new peer would get 401 until the relay restarts. Any authenticated agent
+    can call this (it doesn't grant any privilege, just refreshes shared state)."""
+    new_tokens = load_tokens()
+    before = set(tokens.values())
+    after = set(new_tokens.values())
+    tokens.clear()
+    tokens.update(new_tokens)
+    return {
+        "ok": True,
+        "known_agents": sorted(after),
+        "added": sorted(after - before),
+        "removed": sorted(before - after),
+    }
+
+
 # ---- Web UI (Faza 5) ----
 
 _UI_PATH = Path(__file__).parent / "ui" / "audit.html"

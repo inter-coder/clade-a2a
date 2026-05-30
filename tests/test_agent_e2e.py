@@ -939,6 +939,136 @@ async def test_clade_task_update_only_for_assigned(
     assert "delegated" in upd["error"]
 
 
+@pytest.mark.asyncio
+async def test_relay_reload_tokens_endpoint(
+    relay_process, relay_url, token_for_alice, workdir,
+):
+    """v1.11.0: POST /admin/reload-tokens re-reads tokens.json from disk and
+    swaps in-memory state. Used by clade-add-peer after appending a new bearer."""
+    import json as _json
+
+    # The conftest relay_process fixture wrote workdir/tokens.json — that's
+    # the file the subprocess relay actually loaded. We mutate that on disk.
+    tokens_path = workdir / "tokens.json"
+    original_content = tokens_path.read_text()
+
+    new_bearer = "tempduke_synthetic_bearer_for_test_purposes_12345678"
+    mutated = _json.loads(original_content)
+    mutated[new_bearer] = "tempduke"
+    tokens_path.write_text(_json.dumps(mutated, indent=2))
+
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{relay_url}/admin/reload-tokens",
+                              headers={"Authorization": f"Bearer {token_for_alice}"},
+                              timeout=5)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert "tempduke" in body["added"]
+        assert "tempduke" in body["known_agents"]
+
+        # The synthetic bearer must now authenticate
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{relay_url}/audit",
+                              headers={"Authorization": f"Bearer {new_bearer}"},
+                              timeout=3)
+        assert r.status_code == 200
+    finally:
+        tokens_path.write_text(original_content)
+        async with httpx.AsyncClient() as c:
+            await c.post(f"{relay_url}/admin/reload-tokens",
+                          headers={"Authorization": f"Bearer {token_for_alice}"},
+                          timeout=5)
+
+
+def test_add_peer_hmac_pair_symmetry(tmp_path):
+    """v1.11.0: clade_cli.add_peer must generate matching HMAC secrets for
+    every pair (alice.peers.bob.secret == bob.peers.alice.secret). Without
+    symmetry, peers can't verify each other's signatures."""
+    import sys as _sys
+    import json as _json
+    _sys.modules.pop("agent.main", None)
+
+    # Build a minimal fake setup directory (mimics what setup-server writes)
+    setup_base = tmp_path / "setup-server"
+    project_dir = setup_base / "fake-project"
+    project_dir.mkdir(parents=True)
+    agent_dir = tmp_path / "clade-agent"
+    agent_dir.mkdir()
+
+    # Two existing peers: alice + bob
+    import secrets as _secrets
+    alice_bob_secret = _secrets.token_hex(32)
+    alice_bearer = _secrets.token_urlsafe(32)
+    bob_bearer = _secrets.token_urlsafe(32)
+
+    for pid, bearer, peer_id_other, other_name in [
+        ("alice", alice_bearer, "bob", "Bob"),
+        ("bob",   bob_bearer,   "alice", "Alice"),
+    ]:
+        ydata = {
+            "my_id": pid,
+            "name": pid.capitalize(),
+            "role": f"You are {pid}",
+            "relay_url": "http://127.0.0.1:7777",
+            "bearer_token": bearer,
+            "peers": {peer_id_other: {"secret": alice_bob_secret, "name": other_name}},
+            "audit_db": f"~/.clade/{pid}-audit.db",
+        }
+        import yaml as _yaml
+        for base in (agent_dir, project_dir):
+            (base / f"{pid}.yaml").write_text(_yaml.dump(ydata))
+
+    (project_dir / "tokens.json").write_text(_json.dumps({alice_bearer: "alice", bob_bearer: "bob"}))
+    (project_dir / "setup.json").write_text(_json.dumps({
+        "version": 1, "project_name": "test", "project_token": "fake-project",
+        "relay_url": "http://127.0.0.1:7777", "relay_host_bind": "0.0.0.0",
+        "relay_port": 7777, "tokens_path": str(project_dir / "tokens.json"),
+        "relay_was_started": False,
+        "peers": [
+            {"peer_id": "alice", "display_name": "Alice", "role": "You are alice",
+             "download_token": "td1", "bearer_token": alice_bearer,
+             "yaml_path": str(project_dir / "alice.yaml"), "yaml_content": ""},
+            {"peer_id": "bob", "display_name": "Bob", "role": "You are bob",
+             "download_token": "td2", "bearer_token": bob_bearer,
+             "yaml_path": str(project_dir / "bob.yaml"), "yaml_content": ""},
+        ],
+    }))
+
+    # Invoke add_peer.main() with synthetic argv
+    from clade_cli import add_peer
+    old_argv = sys.argv
+    sys.argv = [
+        "clade-add-peer", "charlie", "Charlie Carter",
+        "You are Charlie, the new tester",
+        "--agent-dir", str(agent_dir),
+        "--setup-data-dir", str(setup_base),
+        "--no-reload",
+    ]
+    try:
+        rc = add_peer.main()
+        assert rc == 0
+    finally:
+        sys.argv = old_argv
+
+    # Verify every pair has matching secrets
+    import yaml as _yaml
+    yamls = {p: _yaml.safe_load((agent_dir / f"{p}.yaml").read_text())
+             for p in ["alice", "bob", "charlie"]}
+    pairs = [("alice", "bob"), ("alice", "charlie"), ("bob", "charlie")]
+    for a, b in pairs:
+        sec_a = yamls[a]["peers"][b]["secret"]
+        sec_b = yamls[b]["peers"][a]["secret"]
+        assert sec_a == sec_b, f"HMAC pair mismatch for ({a}, {b})"
+
+    # Verify tokens.json has charlie + setup.json was updated
+    toks = _json.loads((project_dir / "tokens.json").read_text())
+    assert "charlie" in toks.values()
+    setup = _json.loads((project_dir / "setup.json").read_text())
+    assert any(p["peer_id"] == "charlie" for p in setup["peers"])
+
+
 def test_config_teams_resolve(tmp_path):
     """Config.resolve_team filtrira nepostojece member-e i vraca samo validne."""
     import sys as _sys

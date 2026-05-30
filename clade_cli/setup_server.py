@@ -549,6 +549,40 @@ def create_app(state: AppState) -> FastAPI:
             "data_dir": str(state.data_dir),
         }
 
+    # --- v1.11.0: reload setups from disk (used by clade-add-peer) ---
+
+    @app.post("/admin/reload")
+    async def admin_reload() -> dict:
+        """Re-read every setup.json from disk into the in-memory `state.setups`
+        dict. Used after out-of-band edits (e.g. clade-add-peer adds a new peer
+        artifact to setup.json) so that subsequent calls to /agent/<token>/...
+        endpoints see the new download_token. The relay subprocess is NOT
+        respawned — only file-level state is refreshed."""
+        before_setups = set(state.setups.keys())
+        before_peer_counts = {tok: len(s.peers) for tok, s in state.setups.items()}
+        new_setups = _load_setups(state.data_dir)
+        # Preserve the live relay_subprocess handle for any setup that already
+        # had one — _load_setups would respawn it, but here we want to keep it.
+        for token, new_setup in new_setups.items():
+            if token in state.setups and state.setups[token].relay_subprocess is not None:
+                new_setup.relay_subprocess = state.setups[token].relay_subprocess
+        state.setups = new_setups
+        after_peer_counts = {tok: len(s.peers) for tok, s in state.setups.items()}
+        added_setups = sorted(set(state.setups.keys()) - before_setups)
+        removed_setups = sorted(before_setups - set(state.setups.keys()))
+        peer_count_delta = {
+            tok: after_peer_counts[tok] - before_peer_counts.get(tok, 0)
+            for tok in state.setups.keys()
+            if after_peer_counts[tok] != before_peer_counts.get(tok, 0)
+        }
+        return {
+            "ok": True,
+            "setups_loaded": len(state.setups),
+            "setups_added": added_setups,
+            "setups_removed": removed_setups,
+            "peer_count_delta": peer_count_delta,
+        }
+
     return app
 
 
