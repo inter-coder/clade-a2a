@@ -343,6 +343,65 @@ def _daemon_pid_if_alive() -> int | None:
 mcp = FastMCP(f"clade-agent-{cfg.my_id}")
 
 
+# ---- Humani error mapping (v1.4.6+) ----
+
+def _humanize_relay_error(status: int, text: str, to: str, kind: str) -> str:
+    """Pretvori raw HTTP grešku u poruku koju Claude moze da prenese korisniku.
+
+    Razlog: sender Claude inace pokaze "Relay returned 504: ..." sto korisnik ne
+    moze interpretirati. Posle ovog, sender Claude moze reci "Bob nije
+    odgovorio. Verovatno daemon nije pokrenut." i predloziti akciju."""
+    if status == 504 or "timed out" in text.lower():
+        return (
+            f"Peer '{to}' nije odgovorio u zadatom vremenu. "
+            f"Moguce: (a) njegov daemon nije pokrenut na peer masini "
+            f"(provera: `./start.sh --yolo`), "
+            f"(b) trenutno radi neki drugi dug zadatak, ili "
+            f"(c) network kasnjenje do relay-a. "
+            f"Retry-uj, ili posalji `expect_reply=False` da se queue-uje."
+        )
+    if status == 401:
+        return (
+            f"Auth ne prolazi (401). Tvoj bearer_token ne odgovara nijednom "
+            f"entry-ju u relay-evom tokens.json. Verovatno: setup-server "
+            f"restartovan a tvoj yaml je iz stare sesije. Re-instaliraj sa novim "
+            f"install URL-om sa setup-server-a."
+        )
+    if status == 403:
+        return (
+            f"Forbidden (403). Bearer token validan, ali nemas pravo da {kind} "
+            f"za peer '{to}'. Proveri da peer ID postoji u tvom yaml-u."
+        )
+    if status == 404:
+        return f"Peer '{to}' nepoznat relay-u (404). Proveri spelling i da je peer u istom setup-u."
+    if status == 422:
+        return f"Envelope schema validation pukla (422): {text[:200]}. Verovatno bug u agent kodu, ne user gresci."
+    if 500 <= status < 600:
+        return (
+            f"Relay greska {status}: {text[:200]}. Relay je problematican — "
+            f"proveri njegov log (`tail ~/.clade/setup-server/*/relay.log` na "
+            f"masini koja drzi setup-server)."
+        )
+    return f"Relay returned {status}: {text[:300]}"
+
+
+def _humanize_network_error(exc: Exception, to: str) -> str:
+    """Network/connection greske (relay down, DNS fail, hang) → humani."""
+    name = type(exc).__name__
+    if "Connect" in name:
+        return (
+            f"Relay {cfg.relay_url} nedostupan ({name}). "
+            f"Moguce: (a) relay nije pokrenut, (b) firewall blokira port, ili "
+            f"(c) host masina offline. Proveri `curl {cfg.relay_url}/health`."
+        )
+    if "Timeout" in name:
+        return (
+            f"Network timeout do relay-a {cfg.relay_url}. Mreza spora ili "
+            f"relay zaglavljen. Retry kroz par sekundi."
+        )
+    return f"Network greska ka relay-u: {name}: {str(exc)[:200]}"
+
+
 # ---- Core send/ask helperi (zajednicka logika za clade_message + wrapperi) ----
 
 async def _do_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -371,7 +430,7 @@ async def _do_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
             return {"ok": True, "msg_id": env["msg_id"], "queued": True, "outbox_row": row_id}
         else:
             audit_log("out", env["msg_id"], to, "send", f"http_{r.status_code}", r.text[:200])
-            return {"error": f"Relay returned {r.status_code}: {r.text}"}
+            return {"error": _humanize_relay_error(r.status_code, r.text, to, "send")}
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         row_id = outbox.enqueue(_audit_conn, "send", to, "/send", env, str(e)[:100])
         audit_log("out", env["msg_id"], to, "send", "queued_net", f"outbox row {row_id}: {type(e).__name__}")
@@ -388,15 +447,19 @@ async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str,
     correlation_id = str(uuid.uuid4())
     env = _make_envelope("ask", to, payload, correlation_id=correlation_id)
     record_thread_message(env["msg_id"], "out", to, "ask", payload)
-    async with httpx.AsyncClient(timeout=timeout_s + 10) as client:
-        r = await client.post(
-            f"{cfg.relay_url}/ask",
-            json={"env": env, "timeout_s": timeout_s},
-            headers=_auth_headers(),
-        )
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s + 10) as client:
+            r = await client.post(
+                f"{cfg.relay_url}/ask",
+                json={"env": env, "timeout_s": timeout_s},
+                headers=_auth_headers(),
+            )
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        audit_log("out", env["msg_id"], to, "ask", "net_err", type(e).__name__)
+        return {"error": _humanize_network_error(e, to)}
     if r.status_code != 200:
         audit_log("out", env["msg_id"], to, "ask", f"http_{r.status_code}", r.text[:200])
-        return {"error": f"Relay returned {r.status_code}: {r.text}"}
+        return {"error": _humanize_relay_error(r.status_code, r.text, to, "ask")}
 
     data = r.json()
     reply_env = data.get("response")

@@ -378,6 +378,41 @@ def test_daemon_minimal_settings_written():
         assert "Bash(cat:*)" in allow
 
 
+def test_humanize_relay_errors_map_known_codes(alice_config):
+    """v1.4.6: _humanize_relay_error pretvara raw HTTP kodove u poruke koje
+    sender Claude moze da prenese korisniku — proveravamo kljucne mape."""
+    alice = _load_agent_module(alice_config)
+    h = alice._humanize_relay_error
+
+    msg504 = h(504, "Ask timed out after 90s", "bob", "ask")
+    assert "bob" in msg504 and "daemon" in msg504.lower()  # pominjne peer + akciju
+
+    msg401 = h(401, "Invalid bearer token", "bob", "ask")
+    assert "401" in msg401 and "setup-server" in msg401.lower()  # pominjne uzrok
+
+    msg403 = h(403, "Forbidden", "bob", "send")
+    assert "403" in msg403
+
+    msg404 = h(404, "Not found", "bob", "ask")
+    assert "bob" in msg404 and "nepoznat" in msg404.lower()
+
+    msg500 = h(500, "ISE", "bob", "ask")
+    assert "relay.log" in msg500  # pominje gde da pogleda log
+
+
+def test_humanize_network_errors(alice_config):
+    """v1.4.6: ConnectError + Timeout u humani format."""
+    import httpx as _h  # noqa: PLC0415
+    alice = _load_agent_module(alice_config)
+
+    conn_msg = alice._humanize_network_error(_h.ConnectError("refused"), "bob")
+    assert "nedostupan" in conn_msg.lower()
+    assert "/health" in conn_msg  # predlaze konkretnu proveru
+
+    to_msg = alice._humanize_network_error(_h.ReadTimeout("slow"), "bob")
+    assert "timeout" in to_msg.lower() or "retry" in to_msg.lower()
+
+
 def test_daemon_env_context_collected():
     """v1.4.4: _collect_env_context vraca hostname/ip/datum/putanje koje
     se injectuju u sistem prompt. Bez ovog peer Claude halucinise meta info."""

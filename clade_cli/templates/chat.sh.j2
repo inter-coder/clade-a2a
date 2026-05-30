@@ -1,19 +1,24 @@
 #!/bin/bash
-# Clade A2A — Interactive Claude session for peer '{{ peer.peer_id }}' ({{ peer.display_name }}).
+# Clade A2A — Interactive Claude session for peer '{{ peer.peer_id }}' ({{ peer.display_name }})
+# v1.4.6+: pre exec claude, fetch live peer status iz relay-a + ucitava peer
+# listu iz lokalnog yaml-a, inject u --append-system-prompt da Claude ZNA ko je
+# u mrezi i ko je online.
 #
-# Opens 'claude' in a workdir with .mcp.json pointing to the clade agent.
-# In the prompt, talk naturally:
+# U promptu, pricaj prirodno:
+#   > Pitaj {{ other_sample_name }} koliko je 7 puta 8
+#   > Reci {{ other_sample_name }} da je deploy gotov
 #
-#   > Ask {{ other_sample_name }} how much 7 times 8 is
-#   > Tell {{ other_sample_name }} the deploy is done
-#
-# Claude maps natural language to clade_ask / clade_send automatically.
+# Claude mapira na clade_message automatski.
 
 set -e
 
 cd "$(dirname "$0")"
 AGENT_DIR="$(pwd)"
 WORKDIR="$AGENT_DIR/workdir-{{ peer.peer_id }}"
+PEER_YAML="$AGENT_DIR/{{ peer.peer_id }}.yaml"
+RELAY_URL="{{ setup.relay_url }}"
+MY_ID="{{ peer.peer_id }}"
+MY_NAME="{{ peer.display_name }}"
 
 if ! command -v claude > /dev/null; then
   echo "Error: 'claude' command not found in PATH"
@@ -33,15 +38,96 @@ if [[ ! -f "$WORKDIR/.mcp.json" ]]; then
   exit 1
 fi
 
-# Optional sanity: daemon running?
-if [[ ! -f "$AGENT_DIR/{{ peer.peer_id }}.pid" ]]; then
-  echo "Warning: daemon doesn't appear to be running (no PID file)."
-  echo "Start it first in another terminal: $AGENT_DIR/start.sh --yolo"
+# v1.4.6: provera mog daemon-a preko lock fajla (file lock je primarni izvor istine)
+LOCK_FILE="${HOME}/.clade/${MY_ID}-daemon.lock"
+DAEMON_STATUS="offline"
+if [[ -f "$LOCK_FILE" ]]; then
+  DPID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+  if [[ -n "$DPID" ]] && kill -0 "$DPID" 2>/dev/null; then
+    DAEMON_STATUS="online (PID $DPID)"
+  fi
+fi
+if [[ "$DAEMON_STATUS" == "offline" ]]; then
+  echo "Warning: tvoj daemon ('${MY_ID}') NIJE pokrenut."
+  echo "Bez njega ostali peer-i ne mogu da te pitaju nista (samo ti njih)."
+  echo "Pokreni u drugom terminalu: $AGENT_DIR/start.sh --yolo"
   echo ""
 fi
 
+# v1.4.6: pitaj relay ko je registrovan (known_agents iz /health).
+# Napomena: known_agents znaci "ima validan bearer token" — NE garantuje da
+# je daemon trenutno pokrenut. Pravi liveness check trebao bi peer-side ping
+# endpoint koji v1.4.x nema. Zato chat.sh prikazuje "registrovan" status, a ne
+# "ONLINE". (Mozes da posaljes ask sa kratkim timeout-om da proveris stvarno.)
+REGISTERED_PEERS=""
+if HEALTH=$(curl -sf --max-time 3 "${RELAY_URL}/health" 2>/dev/null); then
+  REGISTERED_PEERS=$(echo "$HEALTH" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)
+  print(','.join(d.get('known_agents', [])))
+except Exception:
+  pass
+" 2>/dev/null || echo "")
+fi
+
+# v1.4.6: parse-uj lokalan yaml za listu peer-ova sa imenima/rolama
+PEER_DIRECTORY=""
+if [[ -f "$PEER_YAML" ]]; then
+  PEER_DIRECTORY=$(python3 -c "
+import sys, yaml
+try:
+  with open('$PEER_YAML') as f:
+    cfg = yaml.safe_load(f)
+  registered = set('${REGISTERED_PEERS}'.split(',')) if '${REGISTERED_PEERS}' else set()
+  lines = []
+  for pid, entry in (cfg.get('peers') or {}).items():
+    if isinstance(entry, dict):
+      name = entry.get('name') or pid
+      role = (entry.get('role') or '').split(chr(10))[0][:80]
+    else:
+      name, role = pid, ''
+    note = 'registrovan u relay-u' if pid in registered else 'NIJE u relay tokens — bug, prijavi'
+    line = f'  - {name} (id={pid}, {note})'
+    if role:
+      line += f' — {role}'
+    lines.append(line)
+  print(chr(10).join(lines))
+except Exception as e:
+  print(f'  (gresci u citanju peer-ova: {e})')
+" 2>/dev/null || echo "  (nije moglo da se procita $PEER_YAML)")
+fi
+
+# Compose system prompt sa svim ovim
+SYSTEM_PROMPT="Ti pomazes korisniku da komunicira preko Clade A2A mreze.
+
+KORISNIK je peer '${MY_NAME}' (ID: ${MY_ID}). Njegov daemon je ${DAEMON_STATUS}.
+Relay: ${RELAY_URL}.
+
+Drugi peer-ovi (iz tvog yaml allowlist-a):
+${PEER_DIRECTORY:-  (lista nedostupna)}
+
+Bitno: 'registrovan u relay-u' znaci samo da peer ima validan token. Da bi
+zaista odgovorio mora i njegov daemon teci na njegovoj masini — to se vidi
+tek ako ask vrati reply ili 504 timeout.
+
+Kako da pricas sa peer-ovima preko MCP tool-a 'clade':
+- Pitaj peer-a i cekaj odgovor:  clade_message(to='<id>', content='...', expect_reply=True, timeout_s=90)
+- Posalji bez cekanja:            clade_message(to='<id>', content='...', expect_reply=False)
+- Reply na primljen ask:          clade_reply(correlation_id, response, to)
+- Pregled inbox-a:                clade_inbox()  (vraca busy ako daemon tece — to je normalno)
+
+Korisnik moze reci:
+  'Pitaj Charlie ...'   → clade_message(to='charlie', ..., expect_reply=True)
+  'Reci Bobu da ...'    → clade_message(to='bob', ..., expect_reply=False)
+
+Ako 504 timeout — sender Claude dobija humani msg (v1.4.6+): 'Peer 'X' nije
+odgovorio... daemon nije pokrenut'. Prenesi to korisniku jasno + predlozi
+da pokrene start.sh na peer masini."
+
 cd "$WORKDIR"
 echo "Opening Claude in $WORKDIR..."
-echo "MCP server 'clade' will auto-discover via .mcp.json"
+echo "Status: my daemon ${DAEMON_STATUS}"
+[[ -n "$REGISTERED_PEERS" ]] && echo "Peers registrovani u relay-u: ${REGISTERED_PEERS//,/, }"
 echo ""
-exec claude
+exec claude --append-system-prompt "$SYSTEM_PROMPT"
