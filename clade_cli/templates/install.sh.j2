@@ -52,6 +52,12 @@ else
 fi
 
 # --- Clone + install clade-a2a ---
+# v1.10.1: koristimo `git fetch + reset --hard origin/master` umesto `git pull
+# --ff-only` jer ff-only tiho failuje kad je local divergent (npr. ostao na
+# revertovanom commit-u koji ne postoji vise na origin-u). Posledica je da
+# install nastavi sa starim kodom — daemon bez presence_loop-a, MCP bez
+# clade_peers itd. — peer-ovi se nikad ne vide. /opt/clade-a2a je deploy
+# artifact, ne dev clone, pa hard reset je tacan pristup.
 NEEDS_REINSTALL=0
 if [[ ! -d "$CLADE_REPO_DIR" ]]; then
   info "Cloning clade-a2a to $CLADE_REPO_DIR..."
@@ -65,12 +71,18 @@ if [[ ! -d "$CLADE_REPO_DIR" ]]; then
   ok "clade-a2a cloned"
   NEEDS_REINSTALL=1
 else
-  info "clade-a2a directory exists, pulling latest..."
+  info "clade-a2a directory exists, syncing to origin/master..."
   PRE_HEAD=$(cd "$CLADE_REPO_DIR" && git rev-parse HEAD 2>/dev/null || echo "")
-  (cd "$CLADE_REPO_DIR" && git pull --ff-only) || warn "git pull failed; using existing checkout"
+  if ! (cd "$CLADE_REPO_DIR" && git fetch origin master 2>&1 | tail -5); then
+    warn "git fetch failed; using existing checkout"
+  else
+    if ! (cd "$CLADE_REPO_DIR" && git reset --hard origin/master 2>&1 | tail -2); then
+      warn "git reset --hard failed; using existing checkout"
+    fi
+  fi
   POST_HEAD=$(cd "$CLADE_REPO_DIR" && git rev-parse HEAD 2>/dev/null || echo "")
   if [[ -n "$PRE_HEAD" && "$PRE_HEAD" != "$POST_HEAD" ]]; then
-    info "pull dovukao nove commit-e ($PRE_HEAD → $POST_HEAD), reinstall venv-a..."
+    info "kod azuriran ($PRE_HEAD → $POST_HEAD), reinstall venv-a..."
     NEEDS_REINSTALL=1
   fi
 fi
@@ -89,6 +101,12 @@ else
 fi
 
 # --- Download peer config + start script ---
+# v1.10.1: per-peer named scripts (start-<peer>.sh, chat-<peer>.sh) umesto
+# shared start.sh + chat.sh. Bez ovog, multi-peer setup na istoj masini
+# overwrite-uje skripte — drugi install pregazi prvog peer-a start.sh, pa
+# samo zadnji install ima funkcionalan entry point.
+# Backward compat: pravimo simbolicke link-ove start.sh -> start-<last>.sh
+# (i chat.sh) tako da single-peer setup-i nastave da rade kao do sad.
 info "Downloading peer config + start script from $SETUP_URL..."
 mkdir -p "$AGENT_DIR"
 cd "$AGENT_DIR"
@@ -97,13 +115,15 @@ curl -fsSL -o "${PEER_ID}.yaml" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/config"
 chmod 600 "${PEER_ID}.yaml"
 ok "Downloaded ${PEER_ID}.yaml (mode 0600)"
 
-curl -fsSL -o "start.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/start"
-chmod +x "start.sh"
-ok "Downloaded start.sh"
+curl -fsSL -o "start-${PEER_ID}.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/start"
+chmod +x "start-${PEER_ID}.sh"
+ln -sf "start-${PEER_ID}.sh" "start.sh"
+ok "Downloaded start-${PEER_ID}.sh (+ start.sh symlink for compat)"
 
-curl -fsSL -o "chat.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/chat"
-chmod +x "chat.sh"
-ok "Downloaded chat.sh"
+curl -fsSL -o "chat-${PEER_ID}.sh" "${SETUP_URL}/agent/${DOWNLOAD_TOKEN}/chat"
+chmod +x "chat-${PEER_ID}.sh"
+ln -sf "chat-${PEER_ID}.sh" "chat.sh"
+ok "Downloaded chat-${PEER_ID}.sh (+ chat.sh symlink for compat)"
 
 # Create workdir with .mcp.json so Claude Code auto-discovers the agent
 mkdir -p "workdir-${PEER_ID}"
@@ -143,12 +163,16 @@ echo ""
 echo -e "${BOLD}Two terminals on this machine:${NC}"
 echo ""
 echo "  Terminal 1 (always-on daemon, auto-replies to incoming questions):"
-echo "    $AGENT_DIR/start.sh --yolo"
+echo "    $AGENT_DIR/start-${PEER_ID}.sh --yolo"
 echo ""
 echo "  Terminal 2 (when YOU want to send/ask other peers):"
-echo "    $AGENT_DIR/chat.sh"
+echo "    $AGENT_DIR/chat-${PEER_ID}.sh"
 echo "    # In Claude prompt: 'Ask <other-peer-name> ...'"
 echo ""
 echo "The daemon polls the relay every 2s and auto-replies via 'claude --print'."
-echo "chat.sh opens an interactive Claude session with clade_* MCP tools available."
+echo "chat-${PEER_ID}.sh opens an interactive Claude session with clade_* MCP tools available."
+echo ""
+echo "Note: ako instaliras vise peer-ova na ISTU masinu, svaki dobija svoju"
+echo "      start-<peer>.sh i chat-<peer>.sh — start.sh / chat.sh su symlink-ovi"
+echo "      na ZADNJEG installed peer-a (backwards-compat za single-peer setup)."
 echo ""
