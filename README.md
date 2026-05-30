@@ -1,111 +1,124 @@
-# Clade A2A
+<p align="center">
+  <img src="assets/logo-wide.svg" alt="Clade A2A — virtual company orchestration for Claude Code agents" width="640">
+</p>
 
-> **Build your virtual company.** Orkestriraj N Claude Code agenata sa razlicitim ulogama, koordiniraj kroz CEO peer, delegiraj zadatke, broadcast-uj timu. Sigurna HMAC-potpisana A2A komunikacija preko centralnog relay-a.
+<p align="center">
+  <strong>Build your virtual company.</strong> Orchestrate N Claude Code agents with distinct roles, coordinate through a CEO peer, delegate tasks, broadcast to teams. Secure HMAC-signed A2A communication through a central relay.
+</p>
 
-**Status:** v1.9.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts). Production-ready za LAN/VPN, public deploy preko Caddy + TLS.
-
----
-
-## Sta gradis ovim alatom
-
-Ne "secure message bus" — to je samo donja kora. **Pravi use case:** virtuelna firma gde svaki agent ima ulogu, a ti (kao CEO) ih koordinirat. Konkretni primeri:
-
-- **Mini dev firma:** ti = CEO, agent_1 = backend dev, agent_2 = frontend dev, agent_3 = QA. Delegiras zadatke, oni rade paralelno, javljaju status.
-- **Research team:** ti = lead researcher, N agenata sa razlicitim domain expertize-om (NLP, vision, RL). Broadcast pitanje, pokupiš N perspektiva.
-- **Content pipeline:** writer agent, editor agent, fact-checker agent, publisher agent. Sekvencijalna delegacija kroz task-ove.
-- **Support tier:** triage agent prima sve, eskalira specijalistima preko `clade_task(to=<specialist>, brief=...)`.
-
-Glavni API koji omogucava ovo:
-
-```
-clade_peers()                        ← ko je online sada
-clade_broadcast(to_team, content)    ← jedna poruka, N peer-ova paralelno
-clade_task(to, brief, deadline)      ← async delegacija, vraca task_id
-clade_task_status(task_id)           ← provera napretka
-clade_task_list(filter, status)      ← moj backlog (sent + received)
-clade_message(to, content, ...)      ← direct ask ili fire-and-forget (1:1)
-```
-
-**Šta NIJE:** zamena za Slack izmedju ljudi. Latencija je 5-90s po reply-u zbog LLM inference + polling.
+<p align="center">
+  <a href="#quick-start--virtual-company-in-60-seconds"><strong>Quick start</strong></a> ·
+  <a href="examples/virtual-company/"><strong>Example company</strong></a> ·
+  <a href="a2a-protocol.md"><strong>Protocol spec</strong></a> ·
+  <a href="#mcp-tools--what-claude-sees"><strong>MCP tools</strong></a>
+</p>
 
 ---
 
-## Quick start — virtuelna firma za 60 sekundi
+**Status:** v1.9.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts). Production-ready for LAN/VPN; public deploy via Caddy + TLS.
 
-Najlakse je preko pre-pripremljenog primera u `examples/virtual-company/`:
+---
+
+## What you build with this tool
+
+Not "secure message bus" — that's just the lower layer. **The real use case:** a virtual company where each agent has a role, and you (as CEO) coordinate them. Concrete examples:
+
+- **Mini dev shop:** you = CEO, agent_1 = backend dev, agent_2 = frontend dev, agent_3 = QA. Delegate tasks, they work in parallel, report status back.
+- **Research team:** you = lead researcher, N agents with different domain expertise (NLP, vision, RL). Broadcast a question, collect N perspectives.
+- **Content pipeline:** writer agent, editor agent, fact-checker agent, publisher agent. Sequential delegation through tasks.
+- **Support tier:** triage agent takes everything, escalates to specialists via `clade_task(to=<specialist>, brief=...)`.
+
+The main API that enables this:
+
+```
+clade_peers()                        ← who is online right now
+clade_broadcast(to_team, content)    ← one message, N peers in parallel
+clade_task(to, brief, deadline)      ← async delegation, returns task_id
+clade_task_status(task_id)           ← check progress
+clade_task_list(filter, status)      ← my backlog (sent + received)
+clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
+```
+
+**What it is NOT:** a Slack replacement for humans. Latency is 5–90s per reply due to LLM inference + polling.
+
+---
+
+## Quick start — virtual company in 60 seconds
+
+Easiest path is the pre-built example in `examples/virtual-company/`:
 
 ```bash
 # 1. Install
 git clone https://github.com/inter-coder/clade-a2a.git && cd clade-a2a
 uv venv && uv pip install -e .
 
-# 2. Bootstrap firmu (CEO + 3 zaposlena: frontend, backend, qa)
+# 2. Bootstrap the company (CEO + 3 employees: frontend, backend, qa)
 cd examples/virtual-company
 ./bootstrap.sh
-# Generise tokens.json + 4 peer yaml-ova + mcp-ceo.json sa svezem secret-ima
+# Generates tokens.json + 4 peer YAMLs + mcp-ceo.json with fresh secrets
 
-# 3. Pokreni relay (terminal 1)
+# 3. Start the relay (terminal 1)
 ../../.venv/bin/clade-relay --tokens $(pwd)/tokens.json --host 127.0.0.1 --port 7777
 
-# 4. Pokreni 3 employee daemona (terminali 2, 3, 4)
+# 4. Start the 3 employee daemons (terminals 2, 3, 4)
 CLADE_CONFIG=$(pwd)/frontend.yaml ../../.venv/bin/python -m agent.daemon --yolo
 CLADE_CONFIG=$(pwd)/backend.yaml  ../../.venv/bin/python -m agent.daemon --yolo
 CLADE_CONFIG=$(pwd)/qa.yaml       ../../.venv/bin/python -m agent.daemon --yolo
 
-# 5. Pokreni CEO interaktivnu sesiju (terminal 5)
+# 5. Start CEO interactive session (terminal 5)
 CLADE_CONFIG=$(pwd)/ceo.yaml claude --mcp-config $(pwd)/mcp-ceo.json
 ```
 
-U CEO promptu pricaš prirodno:
+In the CEO prompt, talk naturally:
 
 ```
-> Ko je sad u firmi?
-   → clade_peers() — tabela sa role i online statusom
+> Who is in the company right now?
+   → clade_peers() — table with roles and online status
 
-> Posalji engineering team-u: stand-up za 10 minuta
-   → clade_broadcast(to_team="engineering", content="stand-up za 10 minuta")
+> Send the engineering team: stand-up in 10 minutes
+   → clade_broadcast(to_team="engineering", content="stand-up in 10 minutes")
 
-> Pitaj backend i frontend paralelno: koliko vremena treba za feature X?
+> Ask backend and frontend in parallel: how long for feature X?
    → clade_broadcast(to=["backend","frontend"], content="...", expect_reply=True)
 
-> Delegiraj backend-u: refaktor login API endpoint
-   → clade_task(to="backend", brief="refaktor login API endpoint")
-   → vraca task_id; backend ce raditi koliko mu treba
+> Delegate to backend: refactor the login API endpoint
+   → clade_task(to="backend", brief="refactor login API endpoint")
+   → returns task_id; backend works as long as it needs
 
-> Sta su tekuca zaduzenja koja sam dao?
+> What tasks are currently in flight?
    → clade_task_list(filter="sent", status="in_progress")
 ```
 
-Detalji po sceniju: [`examples/virtual-company/README.md`](examples/virtual-company/README.md).
+Full scenarios: [`examples/virtual-company/README.md`](examples/virtual-company/README.md).
 
 ---
 
-## Alternativan setup — web wizard (za pravi deploy)
+## Alternative setup — web wizard (for real deployments)
 
-Za firmu sa peer-ovima na razlicitim masinama:
+For a company with peers on different machines:
 
 ```bash
 ./scripts/start-setup-server.sh
-# Otvori http://127.0.0.1:8000/ (ili LAN IP)
-# Forma: dodaj peer-ove + dodaj teams + Generate Setup
+# Open http://127.0.0.1:8000/ (or LAN IP)
+# Form: add peers + add teams + Generate Setup
 ```
 
-Setup-server vraca curl URL po peer-u. Svaki peer (cak i na drugoj masini) pokrece:
+The setup server returns a per-peer install URL. Each peer (even on another machine) runs:
 
 ```bash
 curl -fsSL http://<setup-host>:8000/agent/<token>/install | bash
 ~/clade-agent/start.sh --yolo            # daemon
-~/clade-agent/chat.sh                    # interactive Claude sesija
+~/clade-agent/chat.sh                    # interactive Claude session
 ```
 
-Detalji: [`scripts/start-setup-server.sh`](scripts/start-setup-server.sh) i in-browser uputstvo.
+Details: [`scripts/start-setup-server.sh`](scripts/start-setup-server.sh) and the in-browser instructions.
 
 ---
 
 ## Mental model
 
 ```
-CEO masina (ti drzis ovaj peer interaktivno)
+CEO machine (you hold this peer interactively)
   ┌─────────────────────────────────────┐
   │ Claude Code (interactive)           │
   │   ↓ MCP stdio                       │
@@ -122,78 +135,78 @@ CEO masina (ti drzis ovaj peer interaktivno)
    ┌────────┼────────┬───────────────┐
    │        │        │               │
    ▼        ▼        ▼               ▼
-┌──────┐ ┌──────┐ ┌──────┐    Employee masine (svaka tece daemon)
-│front │ │back  │ │ qa   │    Daemon polluje relay, auto-odgovara na ask,
-│-end  │ │-end  │ │      │    auto-evidentira tasks u SQLite, salje
-│daemon│ │daemon│ │daemon│    presence heartbeat svakih 15s.
+┌──────┐ ┌──────┐ ┌──────┐    Employee machines (each runs a daemon)
+│front │ │back  │ │ qa   │    Daemon polls relay, auto-answers asks,
+│-end  │ │-end  │ │      │    auto-records tasks into SQLite, sends
+│daemon│ │daemon│ │daemon│    presence heartbeat every 15s.
 └──────┘ └──────┘ └──────┘
 ```
 
-Svaki peer ima dva sloja:
-- **Daemon** (uvek tece) — polluje inbox, auto-odgovara na ask-ove kroz `claude --print --append-system-prompt "<role>"`, registruje task-ove u local SQLite, salje presence heartbeat.
-- **Interaktivni Claude** (po potrebi) — kad ZELIS rucno da inicirаsh poruke. CEO ovo drzi stalno otvoreno.
+Each peer has two layers:
+- **Daemon** (always running) — polls inbox, auto-answers asks via `claude --print --append-system-prompt "<role>"`, records tasks into local SQLite, sends presence heartbeat.
+- **Interactive Claude** (on demand) — when YOU want to initiate messages manually. The CEO keeps this open all the time.
 
 ---
 
-## MCP tools — sta Claude vidi
+## MCP tools — what Claude sees
 
-Posle MCP setup-a, svaki peer ima 10 `clade_*` tools (v1.9.0):
+After MCP setup, every peer has 10 `clade_*` tools (v1.9.0):
 
-### Komunikacija
+### Communication
 
-| Tool | Sta radi |
+| Tool | Purpose |
 |---|---|
-| `clade_message(to, content, expect_reply=False, timeout_s=90, thread_id=None)` | Direct 1:1 poruka. `expect_reply=True` = sinhroni ask. |
-| `clade_broadcast(content, to=[...] \| to_team="...", expect_reply=False)` | Paralelno N peer-ova. **v1.9.0** |
-| `clade_reply(correlation_id, response, to)` | Manualan reply (daemon obicno auto). |
-| `clade_inbox(max_items=50)` | Drenira inbox; vraca busy ako daemon tece. |
+| `clade_message(to, content, expect_reply=False, timeout_s=90, thread_id=None)` | Direct 1:1 message. `expect_reply=True` = synchronous ask. |
+| `clade_broadcast(content, to=[...] \| to_team="...", expect_reply=False)` | N peers in parallel. **v1.9.0** |
+| `clade_reply(correlation_id, response, to)` | Manual reply (daemon usually auto-replies). |
+| `clade_inbox(max_items=50)` | Drain inbox; returns busy when daemon is running. |
 
 ### Discovery / awareness
 
-| Tool | Sta radi |
+| Tool | Purpose |
 |---|---|
-| `clade_peers()` | Ko je online sada (heartbeat <30s). Vraca role-ove + secs_ago. **v1.8.0** |
+| `clade_peers()` | Who is online right now (heartbeat <30s). Returns roles + secs_ago. **v1.8.0** |
 
 ### Task delegation
 
-| Tool | Sta radi |
+| Tool | Purpose |
 |---|---|
-| `clade_task(to, brief, deadline_ts_ms=None)` | Async delegate. Vraca `task_id` odmah. **v1.9.0** |
-| `clade_task_update(task_id, status, result)` | Assignee javlja delegator-u. `status` ∈ pending/in_progress/done/failed/cancelled. **v1.9.0** |
-| `clade_task_status(task_id)` | Provera tekuceg statusa iz lokalne DB. **v1.9.0** |
-| `clade_task_list(filter="all"\|"sent"\|"received", status=None)` | Lista task-ova. **v1.9.0** |
+| `clade_task(to, brief, deadline_ts_ms=None)` | Async delegate. Returns `task_id` immediately. **v1.9.0** |
+| `clade_task_update(task_id, status, result)` | Assignee reports back to delegator. `status` ∈ pending/in_progress/done/failed/cancelled. **v1.9.0** |
+| `clade_task_status(task_id)` | Current status from local DB. **v1.9.0** |
+| `clade_task_list(filter="all"\|"sent"\|"received", status=None)` | Task list. **v1.9.0** |
 
 ### Diagnostics
 
-| Tool | Sta radi |
+| Tool | Purpose |
 |---|---|
-| `clade_outbox_status()` | Stanje pending poruka + force flush. |
+| `clade_outbox_status()` | Pending message stats + force flush. |
 
-Deprecated: `clade_send`, `clade_ask` — koristi `clade_message`.
+Deprecated: `clade_send`, `clade_ask` — use `clade_message`.
 
 ---
 
-## Konfiguracija
+## Configuration
 
-### Per-peer yaml (v1.9.0 sa teams)
+### Per-peer YAML (v1.9.0 with teams)
 
 ```yaml
 my_id: ceo
 name: "CEO"
 role: |
-  Ti si CEO virtualne firme. Koordiniras, delegiras, broadcast-ujes.
-  Pre delegacije proveri ko je online (clade_peers).
+  You are the CEO of the virtual company. You coordinate, delegate, broadcast.
+  Before delegating, check who is online (clade_peers).
 relay_url: http://192.168.1.91:7777
 bearer_token: <urlsafe-32>
 peers:
   frontend:
     secret: <hex-64>
     name: "Ana — Frontend dev"
-    role: "React/TypeScript ekspert"
+    role: "React/TypeScript expert"
   backend:
     secret: <hex-64>
     name: "Bob — Backend dev"
-    role: "Python/FastAPI/Postgres ekspert"
+    role: "Python/FastAPI/Postgres expert"
   qa:
     secret: <hex-64>
     name: "Cveta — QA"
@@ -204,7 +217,7 @@ teams:                              # v1.9.0
 audit_db: ~/.clade/ceo-audit.db
 ```
 
-Svi peer-ovi imaju **iste** teams definicije (bootstrap.sh ili setup-server to garantuje). Permissions 0600.
+All peers have the **same** teams definitions (bootstrap.sh and setup-server guarantee this). File permissions 0600.
 
 ### Relay tokens.json
 
@@ -217,97 +230,100 @@ Svi peer-ovi imaju **iste** teams definicije (bootstrap.sh ili setup-server to g
 }
 ```
 
-Permissions 0600. NIKAD u git (`.gitignore` blokira).
+Permissions 0600. NEVER commit to git (`.gitignore` blocks it).
 
 ---
 
-## Patterns za virtuelnu firmu
+## Patterns for a virtual company
 
-### 1. CEO koordinator pattern (preporuceno)
+### 1. CEO coordinator pattern (recommended)
 
-CEO peer = ti, ostali = daemon-i. CEO drzi interaktivnu Claude sesiju, kuca prirodnim jezikom, Claude mapira u `clade_*`. Daemon-i automatski obradjuju ask + task poruke.
+CEO peer = you, others = daemons. The CEO holds an interactive Claude session, types in natural language, and Claude maps to `clade_*`. Daemons auto-process ask and task messages.
 
-**Prednost:** ti ne moras da kucas kod. "Reci backend-u da ..." → automatski.
+**Benefit:** you don't have to type code. "Tell backend to ..." → automatic.
 
 ### 2. Async task delegation
 
-Kad zadatak traje duze od 90s (refactor, prezentacija, istraživanje):
+When a task takes longer than 90s (refactor, presentation, research):
 
 ```
 CEO: clade_task(to="backend", brief="Refactor login flow", deadline_ts_ms=...)
-     → vraca {task_id: "abc-123", status: "pending"}
+     → returns {task_id: "abc-123", status: "pending"}
 
-Backend daemon: prima task u inbox, vidi _task flag → INSERT u tasks tabelu.
-                Backend Claude (kad bude pokrenut interaktivno) vidi u clade_task_list.
+Backend daemon: receives task in inbox, sees _task flag → INSERT into tasks table.
+                Backend Claude (when launched interactively) sees it in clade_task_list.
 
 Backend: clade_task_update("abc-123", status="in_progress")
-         → CEO daemon prima _task_update → UPDATE local DB
+         → CEO daemon receives _task_update → UPDATE local DB
 
 Backend: clade_task_update("abc-123", status="done", result="PR #42")
-         → CEO vidi u clade_task_list(status="done")
+         → CEO sees it in clade_task_list(status="done")
 ```
 
-### 3. Broadcast for status/announcements
+### 3. Broadcast for status / announcements
 
 ```
-CEO: clade_broadcast(to_team="everyone", content="deploy v3.2.0 u 14h")
-     → 3 paralelne fire-and-forget poruke
+CEO: clade_broadcast(to_team="everyone", content="deploy v3.2.0 at 14:00")
+     → 3 parallel fire-and-forget messages
 
-CEO: clade_broadcast(to_team="engineering", content="koliko trajete?", expect_reply=True)
-     → 3 paralelnih ask-ova; CEO dobija 3 odgovora u jedan results dict
+CEO: clade_broadcast(to_team="engineering", content="how long?", expect_reply=True)
+     → 3 parallel asks; CEO gets 3 answers in a single results dict
 ```
 
-### 4. Specijalist delegation
+### 4. Specialist delegation
 
-Kad CEO ne zna ko bi to znao:
-
-```
-CEO: clade_peers()  → vidi role-ove
-CEO: clade_message(to="qa", content="koje su testne strategije za auth flow?", expect_reply=True)
-```
-
-Ili peer-ovi medjusobno (frontend pita backend mid-task):
+When the CEO doesn't know who would know:
 
 ```
-Frontend Claude tokom rada: clade_message(to="backend", content="koje su error kodovi /api/login?", expect_reply=True)
+CEO: clade_peers()  → sees roles
+CEO: clade_message(to="qa", content="what are test strategies for the auth flow?", expect_reply=True)
+```
+
+Or peers between themselves (frontend asks backend mid-task):
+
+```
+Frontend Claude while working: clade_message(to="backend", content="what are the /api/login error codes?", expect_reply=True)
 ```
 
 ---
 
 ## Reference
 
-### REST endpoint-ovi relay-a (v1.9.0)
+### Relay REST endpoints (v1.9.0)
 
-| Method | Path | Auth | Sta radi |
+| Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/health` | nije | Liveness + online_agents + pending_by_peer |
+| GET | `/health` | none | Liveness + online_agents + pending_by_peer |
 | POST | `/send` | Bearer | Fire-and-forget |
-| POST | `/ask` | Bearer | Sinhroni ask (server blokira do reply ili timeout) |
-| POST | `/reply` | Bearer | Reply na pending ask |
-| GET | `/inbox/{agent_id}` | Bearer | Drenira sopstveni inbox |
-| GET | `/audit` | Bearer | Audit log (poslednjih N) |
-| POST | `/presence` | Bearer | Heartbeat — daemon kuca svakih 15s **(v1.8.0)** |
-| GET | `/presence` | Bearer | Snapshot ko je online + secs_ago **(v1.8.0)** |
-| GET | `/ui/audit` | nije | Static HTML viewer |
+| POST | `/ask` | Bearer | Synchronous ask (server blocks until reply or timeout) |
+| POST | `/reply` | Bearer | Reply to a pending ask |
+| GET | `/inbox/{agent_id}` | Bearer | Drain your own inbox |
+| GET | `/audit` | Bearer | Audit log (last N entries) |
+| POST | `/presence` | Bearer | Heartbeat — daemon calls every 15s **(v1.8.0)** |
+| GET | `/presence` | Bearer | Snapshot of who is online + secs_ago **(v1.8.0)** |
+| GET | `/ui/audit` | none | Static HTML viewer |
 
-### Protokol
+### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.9.0). Citaj pre nego sto menjas envelope schema ili HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.9.0). Read it before changing the envelope schema or HMAC.
 
-### Repo struktura
+### Repo structure
 
 ```
 clade-a2a/
-├── README.md                    ← ovaj fajl
+├── README.md                    ← this file
 ├── a2a-protocol.md              ← protocol SSOT (v1.9.0)
 ├── ROADMAP.md                   ← phase tracking
+├── assets/
+│   ├── logo.svg                 ← square logo (256x256)
+│   └── logo-wide.svg            ← horizontal logo + wordmark
 ├── examples/
-│   └── virtual-company/         ← 4-peer demo firma (CEO + 3 employees) — start here
-│       ├── README.md            ← scenarji
-│       └── bootstrap.sh         ← generise sve secret-e
+│   └── virtual-company/         ← 4-peer demo company (CEO + 3 employees) — start here
+│       ├── README.md            ← scenarios
+│       └── bootstrap.sh         ← generates all secrets
 ├── relay/                       ← FastAPI dispatcher + presence + Redis store
 ├── agent/
-│   ├── main.py                  ← stdio MCP server, 10 tool-ova
+│   ├── main.py                  ← stdio MCP server, 10 tools
 │   ├── daemon.py                ← long-running poller + auto-responder
 │   └── outbox.py                ← SQLite outbox + backoff
 ├── clade_cli/
@@ -316,21 +332,21 @@ clade-a2a/
 │   └── templates/               ← chat.sh, start.sh, install.sh, index.html, result.html
 ├── scripts/
 │   ├── start-setup-server.sh
-│   ├── clade-cleanup.sh         ← gas daemon-e + relay + workdir-e
+│   ├── clade-cleanup.sh         ← kill daemons + relay + workdirs
 │   └── test.sh
-├── tests/                       ← pytest suite (50+ testova)
+├── tests/                       ← pytest suite (54+ tests)
 ├── deploy/                      ← Docker Compose + Caddy + systemd
 └── pyproject.toml
 ```
 
-### Limiti
+### Limits
 
 | Setting | Default | Override |
 |---|---|---|
 | Nonce TTL | 300s | `relay/main.py:NONCE_TTL_S` |
 | Timestamp skew | 300_000ms | `relay/main.py:TS_SKEW_MS` |
 | Inbox max per agent | 1000 | `relay/main.py:INBOX_MAX` |
-| Max pending ask per peer | 4 | `CLADE_RELAY_MAX_PENDING_PER_PEER` env (v1.6.0+) |
+| Max pending asks per peer | 4 | `CLADE_RELAY_MAX_PENDING_PER_PEER` env (v1.6.0+) |
 | Ask default timeout | 90s | per-call argument |
 | Presence TTL | 35s | `CLADE_RELAY_PRESENCE_TTL_S` env (v1.8.0+) |
 | Presence heartbeat | 15s | `CLADE_DAEMON_PRESENCE_S` env (v1.8.0+) |
@@ -338,81 +354,81 @@ clade-a2a/
 
 ### Security model
 
-| Pretnja | Mitigacija |
+| Threat | Mitigation |
 |---|---|
 | Outsider | Bearer auth wall (401) |
-| Token leak | 0600 file perms, rotacija, never-log |
-| Relay compromised | E2E HMAC — relay ne moze forge |
-| Peer compromise | Audit trail, token revoke |
-| MITM | TLS (public) ili VPN (LAN) |
+| Token leak | 0600 file perms, rotation, never-log |
+| Compromised relay | End-to-end HMAC — relay can't forge |
+| Compromised peer | Audit trail, token revoke |
+| MITM | TLS (public) or VPN (LAN) |
 | Replay | Nonce + ts ±5min |
-| Prompt injection od peer-a | `_instruction` polje u clade_inbox + system prompt disciplina |
+| Prompt injection from a peer | `_instruction` field in clade_inbox + system prompt discipline |
 
-**Granica:** kooperativni peer-ovi. Ako ne verujes nekom — ne dodaj ga u `peers:` allowlist.
+**Trust boundary:** cooperative peers. If you don't trust someone — don't add them to the `peers:` allowlist.
 
 ---
 
 ## Troubleshooting
 
-**`clade_peers` pokazuje peer-a kao offline iako daemon "tece"** — verovatno daemon je od v1.7.x ili stariji (nema presence_loop). Upgrade + restart daemon-a. Posle 15s mora biti online.
+**`clade_peers` shows a peer as offline even though its daemon is "running"** — probably the daemon is from v1.7.x or earlier (no presence_loop). Upgrade and restart the daemon. After 15s it must be online.
 
-**`clade_broadcast` vraca `failed > 0`** — bar jedan target peer je offline ili nepoznat. `results` dict pokazuje per-peer error.
+**`clade_broadcast` returns `failed > 0`** — at least one target peer is offline or unknown. The `results` dict shows the per-peer error.
 
-**`clade_task` poslat ali `clade_task_status` vraca task_id nije u DB** — to je delegator side, task_id postoji od trenutka slanja. Ako error, znaci task_id si pogresno kopirao.
+**`clade_task` sent but `clade_task_status` says the task_id is not in DB** — that's the delegator side; the task_id exists from the moment it's sent. If you get an error, you've likely mis-typed the task_id.
 
-**Assignee ne vidi `clade_task_list(filter="received")` iako CEO je delegirao** — daemon mora biti pokrenut na assignee masini kad task stigne. Inace task ode u relay inbox i ceka. Kad daemon krene, drain-uje inbox i upisuje u tasks.
+**Assignee doesn't see `clade_task_list(filter="received")` even though CEO delegated** — the daemon must be running on the assignee machine when the task arrives. Otherwise the task sits in the relay inbox and waits. When the daemon starts, it drains the inbox and writes to tasks.
 
-**Send queued, ne flush-uje** — relay nedostupan. Provera: `curl http://<relay>:7777/health`. Status: `clade_outbox_status`.
+**Send queued, never flushes** — relay unreachable. Check: `curl http://<relay>:7777/health`. Status: `clade_outbox_status`.
 
-**Tampered HMAC u rejected** — shared secret ne odgovara izmedju peer-ova. Ako koristis bootstrap.sh / setup-server, ovo se ne moze desiti. Ako rucno editujes yaml — proveri da `alice.yaml.peers.bob.secret == bob.yaml.peers.alice.secret`.
+**Tampered HMAC in the rejected list** — the shared secret doesn't match between peers. If you use bootstrap.sh / setup-server, this can't happen. If you edit YAML by hand — verify that `alice.yaml.peers.bob.secret == bob.yaml.peers.alice.secret`.
 
 ---
 
-## Komande za dev
+## Dev commands
 
 ```bash
 # Run tests
 ./scripts/test.sh
 
 # Single test
-.venv/bin/python -m pytest tests/test_agent_e2e.py::test_clade_broadcast_basic -v
+.venv/bin/python -m pytest tests/test_agent_e2e.py::test_clade_broadcast_to_list_parallel_send -v
 
 # Build wheel
 .venv/bin/python -m build
 
-# Cleanup orphan daemon-i / relay / workdir-i / setup-server
+# Cleanup orphan daemons / relay / workdirs / setup-server
 ./scripts/clade-cleanup.sh
 ./scripts/clade-cleanup.sh --dry-run
 ./scripts/clade-cleanup.sh --include-relay --include-setups
 ```
 
-Nema linter/type-checker config. Pre commit-a samo `./scripts/test.sh`.
+No linter / type-checker config. Before commit, just run `./scripts/test.sh`.
 
 ---
 
 ## Status & roadmap
 
-| Verzija | Sta | Status |
+| Version | What | Status |
 |---|---|---|
-| v1.0.0 | `clade_message` unifikacija, file lock | ✓ |
+| v1.0.0 | `clade_message` unification, file lock | ✓ |
 | v1.1.0 | Thread persistence (`_thread_id` + SQLite) | ✓ |
 | v1.2.0 | Clarify-back, outbox monitor, minimal headless | ✓ |
 | v1.3.0 | Name + role per peer (system prompt) | ✓ |
-| v1.4.x | UX iteracije, setup-server, parallel poll, humani errori | ✓ |
-| v1.6.0 | Cancel protokol + relay back-pressure | ✓ |
+| v1.4.x | UX iterations, setup-server, parallel poll, humanized errors | ✓ |
+| v1.6.0 | Cancel protocol + relay back-pressure | ✓ |
 | v1.7.0 | Hot-reload peer allowlist, log rotation, audit prune | ✓ |
 | v1.8.0 | Presence layer (`clade_peers`, /presence endpoint) | ✓ |
 | **v1.9.0** | **Virtual company: broadcast, teams, async tasks** | ✓ |
 | v2.x | Persistent task scheduler, CEO dashboard, transparency mode | future |
 
-Detalji: [`a2a-protocol.md` §11](a2a-protocol.md).
+Details: [`a2a-protocol.md` §11](a2a-protocol.md).
 
 ---
 
-## Licenca
+## License
 
 MIT.
 
-## Autor
+## Author
 
-Dušan Krstić (Symappsys d.o.o.) sa Claude Code asistencijom.
+Dušan Krstić (Symappsys d.o.o.) with Claude Code assistance.
