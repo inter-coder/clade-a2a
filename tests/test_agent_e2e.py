@@ -400,6 +400,60 @@ def test_humanize_relay_errors_map_known_codes(alice_config):
     assert "relay.log" in msg500  # pominje gde da pogleda log
 
 
+def test_cancel_auth_check_blocks_other_peers(alice_config):
+    """v1.7.0 (C2): cancel od peer-a koji NIJE original sender mora biti
+    odbacen. Sprecava maliciozan peer da otkaze tudji ask."""
+    import asyncio  # noqa: PLC0415
+    import importlib  # noqa: PLC0415
+    # Reload daemon module da pokupi fresh state
+    if "agent.daemon" in importlib.sys.modules:
+        del importlib.sys.modules["agent.daemon"]
+    from agent import daemon  # noqa: PLC0415
+
+    # Setup _inflight_by_corr sa fake task + original sender "alice"
+    async def fake_task_body():
+        await asyncio.sleep(60)
+
+    async def run():
+        task = asyncio.create_task(fake_task_body())
+        daemon._inflight_by_corr["target-corr-123"] = (task, "alice")
+        try:
+            # Mock audit_log_fn
+            calls = []
+            def audit_mock(direction, msg_id, peer, kind, status, note=""):
+                calls.append((direction, peer, kind, status))
+
+            # Attack: charlie pokusava cancel
+            env = {
+                "msg_id": "evil-msg",
+                "from_agent": "charlie",
+                "to_agent": "bob",
+                "kind": "cancel",
+                "payload": {"target_correlation_id": "target-corr-123"},
+            }
+            await daemon.process_message(env, False, None, None, None, audit_mock)
+            # Mora biti rejected
+            assert any(c[3] == "auth_fail" for c in calls), f"calls: {calls}"
+            # Task NE sme biti otkazan
+            assert not task.cancelled() and not task.done()
+
+            # Legit: alice (original sender) cancel — mora proci
+            env2 = dict(env)
+            env2["from_agent"] = "alice"
+            env2["msg_id"] = "legit-msg"
+            await daemon.process_message(env2, False, None, None, None, audit_mock)
+            assert any(c[3] == "cancelled" for c in calls), f"calls posle legit: {calls}"
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(run())
+
+
 def test_humanize_503_with_retry_after(alice_config):
     """v1.5.0: relay back-pressure 503 mora biti pretvoren u humani message
     sa retry_after_s ako relay vraca strukturisani body."""

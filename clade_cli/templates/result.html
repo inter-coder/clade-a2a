@@ -268,6 +268,11 @@
       {% endfor %}
     </div>
 
+    <div class="card">
+      <h2>Live status <span style="font-size: 0.7em; color: var(--text-dim);">(refresh every 5s)</span></h2>
+      <div id="live-status">Loading...</div>
+    </div>
+
     <div class="footer-actions">
       <a href="/" class="btn">← Back to setup</a>
       <a href="{{ setup.relay_url }}/health" class="btn" target="_blank">Check relay health</a>
@@ -287,6 +292,34 @@
         }, 1500);
       });
     }
+
+    // v1.7.0 (C4): realtime status poll
+    async function refreshStatus() {
+      try {
+        const r = await fetch('/setup/{{ setup.project_token }}/status');
+        const d = await r.json();
+        const known = d.relay_known_agents || [];
+        const pending = d.pending_by_peer || {};
+        const lines = [];
+        lines.push(`<div><strong>Relay:</strong> ${d.relay_alive ? '<span style="color:var(--success)">running</span>' : '<span style="color:var(--warning)">down</span>'} (${d.relay_url})</div>`);
+        lines.push(`<div><strong>Registered peers:</strong> ${known.length ? known.join(', ') : '(none yet)'}</div>`);
+        if (Object.keys(pending).length > 0) {
+          const pl = Object.entries(pending).map(([p, n]) => `${p}: ${n}`).join(', ');
+          lines.push(`<div><strong>Pending ask-ovi:</strong> ${pl}</div>`);
+        } else {
+          lines.push(`<div><strong>Pending ask-ovi:</strong> 0 (idle)</div>`);
+        }
+        lines.push(`<div><strong>Audit count:</strong> ${d.audit_count || 0}</div>`);
+        if (d.relay_error) {
+          lines.push(`<div style="color:var(--warning)">Relay error: ${d.relay_error}</div>`);
+        }
+        document.getElementById('live-status').innerHTML = lines.join('');
+      } catch (e) {
+        document.getElementById('live-status').textContent = 'Status error: ' + e.message;
+      }
+    }
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
   </script>
 </body>
 </html>

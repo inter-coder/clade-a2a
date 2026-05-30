@@ -178,11 +178,18 @@ app = FastAPI(title="Clade Relay (Faza 2)", lifespan=lifespan)
 async def health() -> dict[str, Any]:
     assert store is not None
     store_health = await store.health()
+    # v1.7.0 (C1): per-peer pending count — sender Claude moze proaktivno
+    # load-balance pre nego sto dobije 503 back-pressure.
+    pending_by_peer: dict[str, int] = {}
+    for target in pending_target_by_corr.values():
+        pending_by_peer[target] = pending_by_peer.get(target, 0) + 1
     return {
         "ok": True,
         "phase": 2,
         "known_agents": sorted(set(tokens.values())),
         "pending_asks": len(pending_asks),
+        "pending_by_peer": pending_by_peer,
+        "max_pending_per_peer": MAX_PENDING_PER_PEER,
         "audit_count": len(audit),
         "store": store_health,
     }

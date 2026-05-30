@@ -51,9 +51,10 @@ CLAUDE_CONCURRENCY = int(os.environ.get("CLADE_DAEMON_CONCURRENCY", "2"))
 SHUTDOWN_EVENT = asyncio.Event()
 _claude_semaphore: asyncio.Semaphore | None = None  # init u poll_loop
 _inflight_tasks: set[asyncio.Task] = set()
-# v1.5.0: corr_id → asyncio.Task za cancel protocol. Kad sender posalje
-# kind=cancel envelope sa target_correlation_id, daemon lookup ovde + task.cancel().
-_inflight_by_corr: dict[str, asyncio.Task] = {}
+# v1.5.0: corr_id → (asyncio.Task, original_sender_id) za cancel protocol.
+# v1.7.0 (C2): cuvamo i original_sender_id — cancel auth check sprecava da
+# bilo koji peer iz allowlist-a otkaze tudji ask.
+_inflight_by_corr: dict[str, tuple[asyncio.Task, str]] = {}
 
 
 # ---- Payload → question text ekstrakcija ----
@@ -230,9 +231,47 @@ def write_minimal_settings(workdir: Path) -> Path:
     return settings_path
 
 
+# v1.7.0 (C6): opcioni file logger sa rotation-om. Ako --log-file dat,
+# daemon log() pise i u taj fajl (kroz RotatingFileHandler, default 10MB x 3).
+# Stdout ostaje (za docker/systemd integraciju).
+_log_file_handler = None  # set u main() ako --log-file dat
+
+
+def _strip_ansi(s: str) -> str:
+    """Skida ANSI escape sekvence za fajl (terminal-friendly stdout ostaje)."""
+    import re  # noqa: PLC0415
+    return re.sub(r'\x1b\[[0-9;]*m', '', s)
+
+
 def log(msg: str, color: str = "") -> None:
     ts = time.strftime("%H:%M:%S")
-    print(f"{DIM}[{ts}]{RESET} {color}{msg}{RESET}", flush=True)
+    line_term = f"{DIM}[{ts}]{RESET} {color}{msg}{RESET}"
+    print(line_term, flush=True)
+    if _log_file_handler is not None:
+        try:
+            _log_file_handler.emit_line(f"[{ts}] {_strip_ansi(msg)}")
+        except Exception:
+            pass
+
+
+class _RotatingFileLogger:
+    """Mini wrapper oko logging.handlers.RotatingFileHandler — daje emit_line()
+    da bi se uklopio u trenutni print-based log() bez velikog refaktora."""
+    def __init__(self, path: str, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 3):
+        import logging  # noqa: PLC0415
+        import logging.handlers  # noqa: PLC0415
+        self._h = logging.handlers.RotatingFileHandler(
+            path, maxBytes=max_bytes, backupCount=backup_count,
+            encoding="utf-8",
+        )
+        self._h.setFormatter(logging.Formatter("%(message)s"))
+        self._logger = logging.getLogger(f"clade-daemon-{path}")
+        self._logger.setLevel(logging.INFO)
+        self._logger.addHandler(self._h)
+        self._logger.propagate = False
+
+    def emit_line(self, line: str) -> None:
+        self._logger.info(line)
 
 
 def banner(msg: str) -> None:
@@ -371,8 +410,20 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
         )
 
     # 2) v1.4.4: realan host kontekst — peer Claude zna GDE je
+    # v1.7.0 (C5): trenutno opterecenje u kontekstu — pod stresom Claude
+    # treba da skrati odgovore jos vise.
     if cfg is not None:
         env_ctx = _collect_env_context(workdir, cfg)
+        load_line = ""
+        if _claude_semaphore is not None:
+            in_flight = len(_inflight_tasks)
+            load_pct = (in_flight / CLAUDE_CONCURRENCY) * 100 if CLAUDE_CONCURRENCY else 0
+            load_hint = ""
+            if load_pct >= 100:
+                load_hint = " — TI SI JEDAN OD ZADNJIH SLOT-ova, drugi cekaju; budi vrlo sazet"
+            elif load_pct >= 50:
+                load_hint = " — opterecenje srednje, ne troši kontekst"
+            load_line = f"Opterecenje: {in_flight}/{CLAUDE_CONCURRENCY} slot-ova zauzeto{load_hint}\n"
         sections.append(
             "=== TVOJ KONTEKST (host) ===\n"
             f"Hostname: {env_ctx['hostname']}\n"
@@ -381,6 +432,7 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
             f"Workdir: {env_ctx['workdir']}\n"
             f"Tvoj config: {env_ctx['config_path']}\n"
             f"Audit DB: {env_ctx['audit_db']}\n"
+            f"{load_line}"
             "=== KRAJ ===\n"
         )
 
@@ -556,11 +608,17 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
         record_thread_fn(env["msg_id"], "in", from_agent, kind, payload)
 
     # v1.5.0: cancel protokol — sender posaljnao da otkaze tekuci ask
+    # v1.7.0 (C2): auth check — samo ORIGINAL sender moze cancel sopstveni ask
     if kind == "cancel":
         target_corr = payload.get("target_correlation_id") if isinstance(payload, dict) else None
         log(f"{YELLOW}← cancel{RESET} {DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET} → target {target_corr}", "")
         if target_corr and target_corr in _inflight_by_corr:
-            task = _inflight_by_corr[target_corr]
+            task, orig_sender = _inflight_by_corr[target_corr]
+            if from_agent != orig_sender:
+                log(f"{RED}  ✗ cancel AUTH FAIL — sender '{from_agent}' nije original '{orig_sender}'{RESET}", "")
+                audit_log_fn("rejected", env["msg_id"], from_agent, "cancel", "auth_fail",
+                             f"sender ne odgovara originalu '{orig_sender}'")
+                return
             task.cancel()
             audit_log_fn("in", env["msg_id"], from_agent, "cancel", "cancelled", target_corr)
         else:
@@ -698,6 +756,47 @@ async def outbox_monitor_loop(cfg, audit_conn, outbox_mod) -> None:
                     outbox_mod.mark_failed(audit_conn, row["id"], str(e)[:80])
 
 
+async def config_watcher_loop(cfg, config_path: Path) -> None:
+    """v1.7.0 (C8): hot-reload peer allowlist iz yaml-a kad fajl menja mtime.
+    Bez restart-a daemona, user moze: edit-uje peer.yaml (npr doda novog peer-a
+    iz svezeg setup-a), daemon ce za do 5s primijetiti + osvjeziti cfg.peers.
+    Dict swap je atomic na Python nivou pa nije race-iv sa poll_loop koji
+    cita cfg.peer_secret() jedan-po-jedan."""
+    import yaml as _yaml  # noqa: PLC0415
+    try:
+        last_mtime = config_path.stat().st_mtime
+    except OSError:
+        last_mtime = 0
+    while not SHUTDOWN_EVENT.is_set():
+        try:
+            await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=5)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            mtime = config_path.stat().st_mtime
+            if mtime <= last_mtime:
+                continue
+            data = _yaml.safe_load(config_path.read_text()) or {}
+            new_peers_raw = data.get("peers", {})
+            # Iste validacije kao u agent.main.PeerInfo
+            from agent.main import PeerInfo  # noqa: PLC0415
+            new_peers: dict = {}
+            for pid, entry in new_peers_raw.items():
+                if isinstance(entry, dict):
+                    new_peers[pid] = PeerInfo(**entry)
+                else:
+                    new_peers[pid] = entry
+            old_count = len(cfg.peers)
+            cfg.peers = new_peers
+            last_mtime = mtime
+            added = set(new_peers) - set(cfg.peers).union(set(new_peers))  # placeholder
+            log(f"{CYAN}↻ config reload: peers {old_count} → {len(new_peers)} "
+                f"({list(new_peers.keys())}){RESET}", "")
+        except Exception as e:
+            log(f"{RED}config watcher error: {type(e).__name__}: {e}{RESET}", "")
+
+
 async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
                                 sign_fn, audit_log_fn, **kwargs) -> None:
     """v1.4.8: Wrapper koji uzima semafor pre nego spawn-uje claude --print.
@@ -769,7 +868,8 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                         if env.get("kind") == "ask":
                             corr = env.get("correlation_id")
                             if corr:
-                                _inflight_by_corr[corr] = task
+                                # v1.7.0: cuvamo (task, original_sender) tuple
+                                _inflight_by_corr[corr] = (task, env.get("from_agent"))
                                 task.add_done_callback(
                                     lambda _t, c=corr: _inflight_by_corr.pop(c, None))
                 else:
@@ -797,7 +897,18 @@ def main() -> None:
                              "(potrebno ako tvoj odgovor zahteva tool koriscenje bez approval-a)")
     parser.add_argument("--workdir", default=None,
                         help="Workdir za claude subprocess (default: privremeni dir bez CLAUDE.md)")
+    parser.add_argument("--log-file", default=None,
+                        help="Pored stdout-a, pisi log u ovaj fajl sa rotacijom "
+                             "(default: 10MB × 3 backup-a). Bez ovog, samo stdout.")
     args = parser.parse_args()
+
+    # v1.7.0: file log handler ako --log-file dat
+    if args.log_file:
+        global _log_file_handler
+        try:
+            _log_file_handler = _RotatingFileLogger(args.log_file)
+        except Exception as e:
+            print(f"[clade-daemon] WARN: --log-file '{args.log_file}' ne moze: {e}", file=sys.stderr)
 
     # Late import — agent.main loaduje config iz CLADE_CONFIG env-a, mora postojati
     try:
@@ -867,8 +978,11 @@ def main() -> None:
             format_thread_fn=format_thread_for_prompt,
         ))
         monitor = asyncio.create_task(outbox_monitor_loop(cfg, _audit_conn, outbox_mod))
+        # v1.7.0 (C8): config watcher za hot-reload peer allowlist
+        config_path = Path(os.environ.get("CLADE_CONFIG", "./config.yaml")).expanduser()
+        watcher = asyncio.create_task(config_watcher_loop(cfg, config_path))
         try:
-            await poll  # poll_loop drzi semantiku zivota; monitor ide u pozadini
+            await poll  # poll_loop drzi semantiku zivota; ostali rade u pozadini
         finally:
             # v1.4.8: ceka in-flight claude --print task-ove max 10s pre
             # shutdown-a. Bez ovog, SIGTERM mid-task-a ostavi zombie spawn-ove
@@ -884,10 +998,12 @@ def main() -> None:
                 except asyncio.TimeoutError:
                     log(f"{YELLOW}timeout — {len(_inflight_tasks)} ask-ova nedovrseno{RESET}", "")
             monitor.cancel()
-            try:
-                await monitor
-            except asyncio.CancelledError:
-                pass
+            watcher.cancel()
+            for t in (monitor, watcher):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     try:
         loop.run_until_complete(_run_all())

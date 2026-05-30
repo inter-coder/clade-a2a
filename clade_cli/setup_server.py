@@ -432,6 +432,34 @@ def create_app(state: AppState) -> FastAPI:
                           and setup.relay_subprocess.poll() is None,
         )
 
+    # v1.7.0 (C4): realtime status JSON za setup result page polling
+    @app.get("/setup/{project_token}/status")
+    async def setup_status(project_token: str) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        relay_alive = (setup.relay_subprocess is not None
+                       and setup.relay_subprocess.poll() is None)
+        status: dict = {
+            "relay_url": setup.relay_url,
+            "relay_alive": relay_alive,
+            "relay_pid": setup.relay_subprocess.pid if relay_alive else None,
+            "peers": list(setup.peers.keys()),
+        }
+        # Pita relay /health za live podatke (known_agents, pending_by_peer)
+        try:
+            import httpx as _httpx  # noqa: PLC0415
+            with _httpx.Client(timeout=2) as c:
+                r = c.get(f"{setup.relay_url}/health")
+                if r.status_code == 200:
+                    h = r.json()
+                    status["relay_known_agents"] = h.get("known_agents", [])
+                    status["pending_by_peer"] = h.get("pending_by_peer", {})
+                    status["audit_count"] = h.get("audit_count", 0)
+        except Exception as e:
+            status["relay_error"] = str(e)[:120]
+        return status
+
     # --- Per-peer artifacts ---
 
     @app.get("/agent/{token}/install", response_class=PlainTextResponse)

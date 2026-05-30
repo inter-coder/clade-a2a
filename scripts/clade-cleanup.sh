@@ -11,6 +11,9 @@
 #   --include-setups    Brisi i ~/.clade/setup-server/* (stari setup-i koje
 #                       setup-server respawn-uje na svaki start). Relay-i tih
 #                       setup-ova se ubijaju preko njihovih relay.pid fajlova.
+#   --prune-audit DAYS  Obrise audit + thread_history zapise starije od DAYS
+#                       dana iz ~/.clade/*-audit.db, pa VACUUM da oslobodi
+#                       prostor. NE dira live daemon-e (samo SQL).
 #   --dry-run           Samo prikazi, ne diraj nista
 #   -h, --help          Ova poruka
 
@@ -28,20 +31,23 @@ YES=false
 INCLUDE_RELAY=false
 INCLUDE_SETUPS=false
 DRY_RUN=false
+PRUNE_AUDIT_DAYS=""
 SETUP_SERVER_DIR="${HOME}/.clade/setup-server"
 
-for arg in "$@"; do
-  case "$arg" in
-    --yes|-y) YES=true ;;
-    --include-relay) INCLUDE_RELAY=true ;;
-    --include-setups) INCLUDE_SETUPS=true ;;
-    --dry-run) DRY_RUN=true ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes|-y) YES=true; shift ;;
+    --include-relay) INCLUDE_RELAY=true; shift ;;
+    --include-setups) INCLUDE_SETUPS=true; shift ;;
+    --prune-audit) PRUNE_AUDIT_DAYS="$2"; shift 2 ;;
+    --prune-audit=*) PRUNE_AUDIT_DAYS="${1#*=}"; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     *)
-      echo "Unknown flag: $arg" >&2
+      echo "Unknown flag: $1" >&2
       exit 1
       ;;
   esac
@@ -287,6 +293,37 @@ if [[ "$INCLUDE_SETUPS" == "true" ]] && [[ -n "$SETUPS" ]]; then
     fi
     rm -rf "$d" && echo -e "${GREEN}✓${RESET} rm -rf $d"
   done <<< "$SETUPS"
+fi
+
+# v1.7.0 (C7): audit pruning
+if [[ -n "$PRUNE_AUDIT_DAYS" ]]; then
+  if ! [[ "$PRUNE_AUDIT_DAYS" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}ERROR: --prune-audit zahteva pozitivan ceo broj, dobio '$PRUNE_AUDIT_DAYS'${RESET}" >&2
+    exit 1
+  fi
+  echo ""
+  echo -e "${BOLD}Audit pruning (zapisi stariji od ${PRUNE_AUDIT_DAYS} dana):${RESET}"
+  cutoff_ms=$(python3 -c "import time; print(int((time.time() - ${PRUNE_AUDIT_DAYS}*86400) * 1000))")
+  for db in ~/.clade/*-audit.db; do
+    [[ -f "$db" ]] || continue
+    if [[ "$DRY_RUN" == "true" ]]; then
+      n_a=$(python3 -c "import sqlite3; c=sqlite3.connect('$db'); print(c.execute('SELECT COUNT(*) FROM audit WHERE ts_ms < ?', ($cutoff_ms,)).fetchone()[0])" 2>/dev/null)
+      n_t=$(python3 -c "import sqlite3; c=sqlite3.connect('$db'); print(c.execute('SELECT COUNT(*) FROM thread_history WHERE ts_ms < ?', ($cutoff_ms,)).fetchone()[0])" 2>/dev/null)
+      sz=$(stat -c%s "$db" 2>/dev/null)
+      echo -e "  ${DIM}[dry-run]${RESET} $db: bi obrisao $n_a audit + $n_t thread (size $sz)"
+    else
+      python3 <<PYEOF
+import sqlite3
+c = sqlite3.connect("$db")
+n_a = c.execute("DELETE FROM audit WHERE ts_ms < ?", ($cutoff_ms,)).rowcount
+n_t = c.execute("DELETE FROM thread_history WHERE ts_ms < ?", ($cutoff_ms,)).rowcount
+c.commit()
+c.execute("VACUUM")
+c.close()
+print(f"  ✓ $db: obrisao {n_a} audit + {n_t} thread, VACUUM gotov")
+PYEOF
+    fi
+  done
 fi
 
 echo ""
