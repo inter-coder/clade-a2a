@@ -15,7 +15,7 @@
 
 ---
 
-**Status:** v1.9.0 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts). Production-ready for LAN/VPN; public deploy via Caddy + TLS.
+**Status:** v1.10.2 — virtual company orchestration (broadcast, teams, async tasks, presence, role-aware prompts) + `--quickstart` one-shot bootstrap + `extra_add_dirs` filesystem access config. Production-ready for LAN/VPN; public deploy via Caddy + TLS.
 
 ---
 
@@ -45,28 +45,45 @@ clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
 
 ## Quick start — virtual company in 60 seconds
 
-Easiest path is the pre-built example in `examples/virtual-company/`:
+The fastest path is `--quickstart`, which spawns the setup server, posts the
+virtual-company template, installs all 4 peers locally, and prints the next
+commands for you:
 
 ```bash
-# 1. Install
+# Install
 git clone https://github.com/inter-coder/clade-a2a.git && cd clade-a2a
 uv venv && uv pip install -e .
 
-# 2. Bootstrap the company (CEO + 3 employees: frontend, backend, qa)
+# One-shot bootstrap (CEO + frontend + backend + qa + engineering team)
+./scripts/start-setup-server.sh --quickstart
+```
+
+The script writes per-peer scripts to `~/clade-agent/` and prints the
+commands you need next. Open new terminals and run:
+
+```bash
+# Three employee daemons (one terminal each)
+~/clade-agent/start-frontend.sh --yolo
+~/clade-agent/start-backend.sh  --yolo
+~/clade-agent/start-qa.sh       --yolo
+
+# CEO interactive session (fourth terminal)
+~/clade-agent/chat-ceo.sh
+```
+
+Optional: before starting daemons you can edit `~/clade-agent/<peer>.yaml`
+to add `extra_add_dirs` (paths the daemon-spawned Claude can read outside
+its workdir — see [Configuration](#configuration)).
+
+### Alternative: pre-built example via `bootstrap.sh`
+
+For maximum control (custom relay host, manual daemon launches, etc.):
+
+```bash
 cd examples/virtual-company
-./bootstrap.sh
-# Generates tokens.json + 4 peer YAMLs + mcp-ceo.json with fresh secrets
-
-# 3. Start the relay (terminal 1)
+./bootstrap.sh           # generates tokens.json + 4 yamls + mcp-ceo.json
 ../../.venv/bin/clade-relay --tokens $(pwd)/tokens.json --host 127.0.0.1 --port 7777
-
-# 4. Start the 3 employee daemons (terminals 2, 3, 4)
-CLADE_CONFIG=$(pwd)/frontend.yaml ../../.venv/bin/python -m agent.daemon --yolo
-CLADE_CONFIG=$(pwd)/backend.yaml  ../../.venv/bin/python -m agent.daemon --yolo
-CLADE_CONFIG=$(pwd)/qa.yaml       ../../.venv/bin/python -m agent.daemon --yolo
-
-# 5. Start CEO interactive session (terminal 5)
-CLADE_CONFIG=$(pwd)/ceo.yaml claude --mcp-config $(pwd)/mcp-ceo.json
+# Then start daemons + CEO chat as documented in examples/virtual-company/README.md
 ```
 
 In the CEO prompt, talk naturally:
@@ -188,7 +205,7 @@ Deprecated: `clade_send`, `clade_ask` — use `clade_message`.
 
 ## Configuration
 
-### Per-peer YAML (v1.9.0 with teams)
+### Per-peer YAML (v1.10.2)
 
 ```yaml
 my_id: ceo
@@ -215,9 +232,19 @@ teams:                              # v1.9.0
   engineering: [frontend, backend, qa]
   everyone:    [frontend, backend, qa]
 audit_db: ~/.clade/ceo-audit.db
+extra_add_dirs:                     # v1.10.2
+  - ~/projects/myapp
+  - /var/www
 ```
 
 All peers have the **same** teams definitions (bootstrap.sh and setup-server guarantee this). File permissions 0600.
+
+**`extra_add_dirs`** (v1.10.2) — paths the daemon-spawned Claude is allowed
+to read outside its workdir. Without this, Claude is locked to its workdir +
+auto-included dirs (config dir, audit_db parent, `/opt/clade-a2a`). With it,
+you can permanently grant access to project roots, data directories, etc.
+Non-existent paths are skipped with a warning. The daemon reads the yaml at
+startup, so edits take effect on the next `start-<peer>.sh`.
 
 ### Relay tokens.json
 
@@ -404,6 +431,18 @@ clade-a2a/
 
 No linter / type-checker config. Before commit, just run `./scripts/test.sh`.
 
+### Cleanup orphan state
+
+```bash
+./scripts/clade-cleanup.sh                              # kill daemons + remove locks/workdirs
+./scripts/clade-cleanup.sh --include-relay --include-setups   # also kill relay + wipe ~/.clade/setup-server
+./scripts/clade-cleanup.sh --prune-audit 7              # delete audit/thread_history older than 7 days + VACUUM
+```
+
+Or just rerun `./scripts/start-setup-server.sh` — it resets everything
+(daemons, locks, workdirs, setup-server data) on every launch by default.
+Add `--deep` to also wipe `~/.clade/*-audit.db` and `~/clade-agent/`.
+
 ---
 
 ## Status & roadmap
@@ -418,7 +457,9 @@ No linter / type-checker config. Before commit, just run `./scripts/test.sh`.
 | v1.6.0 | Cancel protocol + relay back-pressure | ✓ |
 | v1.7.0 | Hot-reload peer allowlist, log rotation, audit prune | ✓ |
 | v1.8.0 | Presence layer (`clade_peers`, /presence endpoint) | ✓ |
-| **v1.9.0** | **Virtual company: broadcast, teams, async tasks** | ✓ |
+| v1.9.0 | Virtual company: broadcast, teams, async tasks | ✓ |
+| v1.10.0 | Verbosity discipline + MCP auto-trust + install hard-sync | ✓ |
+| **v1.10.2** | **`extra_add_dirs` config + `--quickstart` flag** | ✓ |
 | v2.x | Persistent task scheduler, CEO dashboard, transparency mode | future |
 
 Details: [`a2a-protocol.md` §11](a2a-protocol.md).
