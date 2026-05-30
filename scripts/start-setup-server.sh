@@ -199,6 +199,18 @@ if [[ -z "$QUICKSTART" ]]; then
   exec "$PY" -m clade_cli.setup_server --port "$PORT" "${FILTERED_ARGS[@]}"
 fi
 
+# Quickstart implicira --deep brisanje ~/clade-agent/. Razlog: bez ovog, stari
+# yaml-ovi sa starim bearer-ima ostaju, i ako je daemon iz prethodne sesije
+# jos uvek pokrenut, ima cached stari bearer u memoriji (config se load-uje
+# samo na startup-u). Posledica je 401 "Invalid bearer token" lavina koja
+# se NE vidi u qickstart log-u jer daemon je u drugom terminalu.
+# Plus eksplicitno upozorenje na kraju da se daemon-i pre kvickstart-a
+# moraju ugasiti ili restartovati.
+if [[ -d "$HOME/clade-agent" ]]; then
+  echo "Quickstart: brisem ~/clade-agent (svez yaml = svez bearer = nema 401 sa cached state-om)"
+  rm -rf "$HOME/clade-agent"
+fi
+
 # Quickstart path: BG server, sacekaj health, POST template, install + print
 "$PY" -m clade_cli.setup_server --port "$PORT" "${FILTERED_ARGS[@]}" &
 SS_PID=$!
@@ -282,7 +294,13 @@ echo "=================================================="
 echo "Quickstart gotovo. Virtual company spremno."
 echo "=================================================="
 echo ""
-echo "Pokreni daemon-e (3 employee terminala):"
+echo "VAZNO: ako su u drugim terminalima vec tekuci daemon-i iz prethodne"
+echo "sesije, IMAJU CACHED STAR BEARER → svi pozivi padaju sa 401. Quickstart"
+echo "je vec ubio sve agent.daemon procese (reset), tako da svi tvoji daemoni"
+echo "moraju biti UGASENI ili restartovani sad. Ako u nekom terminalu vidis"
+echo "401 spam, to je upravo to — Ctrl+C taj daemon pa ga ponovo pokreni."
+echo ""
+echo "Pokreni daemon-e (3 employee terminala — svaki u svom):"
 echo "  $HOME/clade-agent/start-frontend.sh --yolo"
 echo "  $HOME/clade-agent/start-backend.sh  --yolo"
 echo "  $HOME/clade-agent/start-qa.sh       --yolo"
