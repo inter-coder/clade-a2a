@@ -227,8 +227,11 @@ def _generate_setup(form: SetupForm, data_dir: Path) -> Setup:
 
 
 def _start_relay_subprocess(setup: Setup) -> subprocess.Popen:
-    """Spawn relay subprocess that reads tokens.json from setup."""
-    # Find venv python (relay needs the same install)
+    """Spawn relay subprocess that reads tokens.json from setup.
+
+    start_new_session=True izoluje subprocess od process grupe setup-server-a.
+    Razlog: relay zivi i preko restart-a setup-server-a — peer install-i ostaju
+    validni (vidi `main()` i `_load_setups`)."""
     venv_python = Path(sys.executable)
     repo_root = Path(__file__).resolve().parent.parent
 
@@ -251,6 +254,123 @@ uvicorn.run(relay.main.app, host='{setup.relay_host_bind}', port={setup.relay_po
     )
     LOG.info("relay subprocess started PID=%d (log: %s)", proc.pid, log_path)
     return proc
+
+
+def _is_relay_already_up(relay_url: str, timeout_s: float = 1.5) -> bool:
+    """Health check na relay_url — True ako vec neko opsluzuje. Koristi se pri
+    load-u setup-ova da ne bi dva relay-a probala da bind-uju isti port."""
+    import httpx as _httpx  # noqa: PLC0415
+    try:
+        with _httpx.Client(timeout=timeout_s) as c:
+            r = c.get(f"{relay_url.rstrip('/')}/health")
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _save_setup(setup: Setup, data_dir: Path) -> None:
+    """Persist setup state u data_dir/<project_token>/setup.json (v1.4.2+).
+
+    Razlog: bez ovoga restart setup-server-a unisti in-memory tokens mapping,
+    a relay subprocess (start_new_session=True) i dalje tece sa starim
+    tokens.json — peer install-i izgledaju validni ali daemon dobija 401
+    jer setup-server vise ne zna o tom download_token-u i ne moze poslati
+    isti yaml. Subprocess handle se NE serijalizuje (PID je transient)."""
+    setup_dir = data_dir / setup.project_token
+    setup_dir.mkdir(parents=True, exist_ok=True)
+    state_file = setup_dir / "setup.json"
+
+    data = {
+        "version": 1,
+        "project_name": setup.project_name,
+        "project_token": setup.project_token,
+        "relay_url": setup.relay_url,
+        "relay_host_bind": setup.relay_host_bind,
+        "relay_port": setup.relay_port,
+        "tokens_path": str(setup.tokens_path),
+        "relay_was_started": setup.relay_subprocess is not None,
+        "peers": [
+            {
+                "peer_id": p.peer_id,
+                "display_name": p.display_name,
+                "role": p.role,
+                "download_token": p.download_token,
+                "bearer_token": p.bearer_token,
+                "yaml_path": str(p.yaml_path),
+                "yaml_content": p.yaml_content,
+            }
+            for p in setup.peers.values()
+        ],
+    }
+    tmp_file = state_file.with_suffix(".json.tmp")
+    tmp_file.write_text(json.dumps(data, indent=2))
+    tmp_file.chmod(0o600)
+    tmp_file.replace(state_file)
+
+
+def _load_setups(data_dir: Path) -> dict[str, Setup]:
+    """Rekonstruisi setup state sa diska na startup. Za svaki sa relay-em:
+    ako relay vec tece, ostavi; ako ne, respawn-uj."""
+    out: dict[str, Setup] = {}
+    if not data_dir.exists():
+        return out
+
+    for project_dir in sorted(data_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        state_file = project_dir / "setup.json"
+        if not state_file.exists():
+            continue
+
+        try:
+            data = json.loads(state_file.read_text())
+        except Exception as e:
+            LOG.warning("failed to load %s: %s — skipping", state_file, e)
+            continue
+
+        if data.get("version") != 1:
+            LOG.warning("setup.json at %s has unknown version, skipping", state_file)
+            continue
+
+        setup = Setup(
+            project_name=data["project_name"],
+            project_token=data["project_token"],
+            relay_url=data["relay_url"],
+            relay_host_bind=data["relay_host_bind"],
+            relay_port=data["relay_port"],
+            tokens_path=Path(data["tokens_path"]),
+        )
+        for p in data.get("peers") or []:
+            artifact = PeerArtifact(
+                peer_id=p["peer_id"],
+                display_name=p["display_name"],
+                role=p["role"],
+                download_token=p["download_token"],
+                bearer_token=p["bearer_token"],
+                yaml_path=Path(p["yaml_path"]),
+                yaml_content=p["yaml_content"],
+            )
+            setup.peers[p["peer_id"]] = artifact
+            setup.download_token_to_peer[p["download_token"]] = p["peer_id"]
+
+        if data.get("relay_was_started"):
+            if _is_relay_already_up(setup.relay_url):
+                LOG.info("setup '%s': external relay still up at %s, not respawning",
+                         setup.project_name, setup.relay_url)
+            else:
+                try:
+                    setup.relay_subprocess = _start_relay_subprocess(setup)
+                    LOG.info("setup '%s': respawned relay on port %d",
+                             setup.project_name, setup.relay_port)
+                except Exception as e:
+                    LOG.error("setup '%s': failed to respawn relay: %s",
+                              setup.project_name, e)
+
+        out[setup.project_token] = setup
+        LOG.info("loaded setup '%s' (%d peers) from %s",
+                 setup.project_name, len(setup.peers), state_file)
+
+    return out
 
 
 # ---- App factory ----
@@ -284,6 +404,8 @@ def create_app(state: AppState) -> FastAPI:
         state.setups[setup.project_token] = setup
         if form.start_relay:
             setup.relay_subprocess = _start_relay_subprocess(setup)
+        # v1.4.2: persistuj da restart setup-server-a ne invalidira peer install-e
+        _save_setup(setup, state.data_dir)
         return RedirectResponse(f"/setup/{setup.project_token}", status_code=303)
 
     # --- Result page (shows per-peer URLs) ---
@@ -403,6 +525,10 @@ def main() -> int:
         public_url_base = f"http://{lan_ip}:{args.port}"
 
     state = AppState(data_dir=data_dir, public_url_base=public_url_base)
+
+    # v1.4.2: ucitaj persistovane setup-e + smart-respawn relay-a ako treba
+    state.setups = _load_setups(state.data_dir)
+
     app = create_app(state)
 
     print(f"\nClade A2A Setup Server")
@@ -410,20 +536,24 @@ def main() -> int:
     print(f"  Open in browser:  {public_url_base}/")
     print(f"  Bind:             {args.host}:{args.port}")
     print(f"  Data dir:         {data_dir}")
+    print(f"  Loaded setups:    {len(state.setups)}")
+    if state.setups:
+        for s in state.setups.values():
+            relay_state = "running" if (
+                s.relay_subprocess is not None
+                or _is_relay_already_up(s.relay_url)
+            ) else "stopped"
+            print(f"    - {s.project_name}: {len(s.peers)} peers, relay {relay_state}")
     print(f"")
-    print(f"  Stop:             Ctrl+C")
+    print(f"  Stop:             Ctrl+C (relay-i ostaju da rade preko restart-a)")
     print(f"")
 
-    # Graceful shutdown of relay subprocesses on signal
-    def shutdown_relays():
-        for setup in state.setups.values():
-            if setup.relay_subprocess and setup.relay_subprocess.poll() is None:
-                LOG.info("stopping relay subprocess PID=%d", setup.relay_subprocess.pid)
-                setup.relay_subprocess.terminate()
-
+    # v1.4.2: ne ubijaj relay subprocess-e na shutdown — moraju da prezive
+    # restart setup-server-a da peer install-i ne pucnu. Eksplicitno kill se
+    # radi preko scripts/clade-cleanup.sh ili kill -PID.
     def handle_signal(sig, _frame):
-        LOG.info("signal %s received, shutting down", signal.Signals(sig).name)
-        shutdown_relays()
+        LOG.info("signal %s received, shutting down (relay-i nastavljaju da rade)",
+                 signal.Signals(sig).name)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, handle_signal)
@@ -434,8 +564,6 @@ def main() -> int:
         uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
     except KeyboardInterrupt:
         pass
-    finally:
-        shutdown_relays()
     return 0
 
 
