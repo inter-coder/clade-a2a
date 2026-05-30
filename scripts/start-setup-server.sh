@@ -309,7 +309,10 @@ echo "Otvori CEO interactive sesiju (cetvrti terminal):"
 echo "  $HOME/clade-agent/chat-ceo.sh"
 echo ""
 echo "Browser dashboard (live presence):"
-echo "  $SS_URL/setup/$PROJECT_TOKEN"
+echo "  $SS_URL/setup/$PROJECT_TOKEN  (this machine)"
+if [[ -n "$LAN_IP" ]] && [[ "$LAN_IP" != "127.0.0.1" ]]; then
+  echo "  http://$LAN_IP:$PORT/setup/$PROJECT_TOKEN  (LAN — share sa drugim masinama)"
+fi
 echo ""
 echo "Setup-server tece u foreground-u. Ctrl+C gasi sve (server + relay subprocess)."
 echo ""
