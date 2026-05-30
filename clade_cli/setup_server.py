@@ -168,6 +168,12 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
         "bearer_token": bearer,
         "peers": peers_dict,
         "audit_db": f"{audit_dir}/{peer.peer_id}-audit.db",
+        # v1.10.2: user prosiruje rucno pre pokretanja daemon-a — putanje koje
+        # daemon-spawn Claude moze da cita van workdir-a. Primer:
+        #   extra_add_dirs:
+        #     - /home/user/projects/foo
+        #     - /var/www/myapp
+        "extra_add_dirs": [],
     })
     # v1.9.0: teams su shared kod sve peer-ove — CEO i zaposleni svi imaju isti
     # list "engineering = [alice, bob]" pa svako moze da broadcast-uje grupi.

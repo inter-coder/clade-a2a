@@ -67,6 +67,12 @@ class Config(BaseModel):
     peers: dict[str, str | PeerInfo] = Field(default_factory=dict)  # peer_id → secret ili PeerInfo
     teams: dict[str, list[str]] = Field(default_factory=dict)  # team_name → [peer_id]
     audit_db: str = "~/.clade/audit.db"
+    # v1.10.2: dodatne putanje koje daemon-spawn Claude moze citati van workdir-a.
+    # Bez ovog, daemon's claude --print je zakljucan u workdir + sopstveni config dir.
+    # User edituje ovo polje rucno pre pokretanja daemon-a da omogucei pristup
+    # konkretnim project dir-ovima (npr. /home/dusan/projects/foo, /var/www).
+    # Path-ovi su validirani u daemon-u (postojanje); nepostojeci su skip-ovani.
+    extra_add_dirs: list[str] = Field(default_factory=list)
 
     def peer_secret(self, peer_id: str) -> str | None:
         """Backward-compat helper: vraca HMAC secret za peer."""

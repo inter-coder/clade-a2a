@@ -342,10 +342,14 @@ def _extra_add_dirs(cfg, workdir: Path) -> list[str]:
     Bez `--add-dir` Claude Code drzi hard path sandbox cak i u YOLO modu —
     cak ni `Read(...)` u `permissions.allow` to ne probija.
 
-    Lista:
+    Auto-included:
       - parent direktorijum CLADE_CONFIG-a (peer yaml live tu)
       - parent direktorijum audit_db (.clade po default-u)
       - /opt/clade-a2a (install dir; ako postoji)
+
+    v1.10.2: dodatno cfg.extra_add_dirs (user-konfigurabilno u yaml-u).
+    Korisno za trajan pristup project dir-ovima, /var/www/, /home/user/code/, ...
+    Path-ovi koji ne postoje su skip-ovani (warn u log-u).
     """
     dirs: list[str] = []
     config_p = os.environ.get("CLADE_CONFIG")
@@ -361,6 +365,16 @@ def _extra_add_dirs(cfg, workdir: Path) -> list[str]:
     for fixed in ["/opt/clade-a2a"]:
         if Path(fixed).exists():
             dirs.append(fixed)
+    # v1.10.2: user-konfigurabilne dodatne putanje iz yaml-a
+    for user_d in getattr(cfg, "extra_add_dirs", []) or []:
+        try:
+            p = Path(user_d).expanduser()
+            if p.exists():
+                dirs.append(str(p.resolve()))
+            else:
+                log(f"{YELLOW}extra_add_dirs: '{user_d}' ne postoji, skipping{RESET}", "")
+        except Exception as e:
+            log(f"{YELLOW}extra_add_dirs '{user_d}' invalid: {e}{RESET}", "")
     # dedupe + skloni one koji su unutar workdir-a (ne treba im --add-dir)
     seen: set[str] = set()
     out: list[str] = []
