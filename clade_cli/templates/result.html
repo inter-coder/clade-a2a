@@ -294,20 +294,39 @@
     }
 
     // v1.7.0 (C4): realtime status poll
+    // v1.8.0: presence-based — prikazi online/offline po peer-u, ne samo known_agents
     async function refreshStatus() {
       try {
         const r = await fetch('/setup/{{ setup.project_token }}/status');
         const d = await r.json();
         const known = d.relay_known_agents || [];
+        const presence = d.presence || {};
         const pending = d.pending_by_peer || {};
         const lines = [];
         lines.push(`<div><strong>Relay:</strong> ${d.relay_alive ? '<span style="color:var(--success)">running</span>' : '<span style="color:var(--warning)">down</span>'} (${d.relay_url})</div>`);
-        lines.push(`<div><strong>Registered peers:</strong> ${known.length ? known.join(', ') : '(none yet)'}</div>`);
+        // Per-peer presence tablica
+        if (Object.keys(presence).length > 0) {
+          const rows = Object.entries(presence).sort().map(([pid, s]) => {
+            const dot = s.online
+              ? '<span style="color:var(--success)">●</span>'
+              : '<span style="color:var(--warning)">○</span>';
+            const status = s.online
+              ? `online (heartbeat ${s.secs_ago}s ago)`
+              : (s.secs_ago === null
+                  ? 'offline (daemon nije pokrenut)'
+                  : `offline (last seen ${s.secs_ago}s ago)`);
+            return `<div style="font-family:ui-monospace,Menlo,monospace;font-size:0.88rem">${dot} <strong>${pid}</strong> — ${status}</div>`;
+          });
+          lines.push(`<div style="margin-top:0.5rem"><strong>Peers (live):</strong></div>`);
+          lines.push(rows.join(''));
+        } else {
+          lines.push(`<div><strong>Peers:</strong> ${known.length ? known.join(', ') + ' (presence nedostupan)' : '(none yet)'}</div>`);
+        }
         if (Object.keys(pending).length > 0) {
           const pl = Object.entries(pending).map(([p, n]) => `${p}: ${n}`).join(', ');
-          lines.push(`<div><strong>Pending ask-ovi:</strong> ${pl}</div>`);
+          lines.push(`<div style="margin-top:0.5rem"><strong>Pending ask-ovi:</strong> ${pl}</div>`);
         } else {
-          lines.push(`<div><strong>Pending ask-ovi:</strong> 0 (idle)</div>`);
+          lines.push(`<div style="margin-top:0.5rem"><strong>Pending ask-ovi:</strong> 0 (idle)</div>`);
         }
         lines.push(`<div><strong>Audit count:</strong> ${d.audit_count || 0}</div>`);
         if (d.relay_error) {

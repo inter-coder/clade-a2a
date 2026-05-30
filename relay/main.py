@@ -38,6 +38,11 @@ AUDIT_MAX = 10_000
 # semaforom CLADE_DAEMON_CONCURRENCY (default 2) pa visak samo cetka u
 # inbox-u. Relay sad odbija sa 503 + Retry-After ako vec ima vise od ovog.
 MAX_PENDING_PER_PEER = int(os.environ.get("CLADE_RELAY_MAX_PENDING_PER_PEER", "4"))
+# v1.8.0: presence — peer je "online" ako je heartbeat-ao u zadnjih PRESENCE_TTL_S.
+# Daemon salje POST /presence svakih PRESENCE_HEARTBEAT_S; ako 2 propuste, peer
+# pada offline. Drzimo in-memory (kao pending_asks) — restart relay-a → svi
+# offline dok ne stigne sledeci heartbeat (~15s). Nije serijabilno na disk.
+PRESENCE_TTL_S = int(os.environ.get("CLADE_RELAY_PRESENCE_TTL_S", "35"))
 
 
 # ---- State ----
@@ -58,6 +63,11 @@ tokens: dict[str, str] = {}
 
 # audit ring buffer — u memoriji za sad, Redis stream u Faza 3
 audit: list[dict[str, Any]] = []
+
+# v1.8.0: presence tracker — peer_id → unix timestamp (sekunde) zadnjeg /presence
+# heartbeat-a. In-process namerno; ako relay restartuje, daemon-i ce u 15s
+# ponovo registrovati prisustvo.
+last_seen_by_peer: dict[str, float] = {}
 
 
 # ---- Models ----
@@ -174,6 +184,27 @@ app = FastAPI(title="Clade Relay (Faza 2)", lifespan=lifespan)
 
 # ---- Endpoints ----
 
+def _presence_snapshot() -> dict[str, dict[str, Any]]:
+    """v1.8.0: izracunaj presence po peer-u. Vraca {peer_id: {online, last_seen_ms,
+    secs_ago}}. Uključuje SVAKOG registrovanog peer-a (iz tokens), ne samo one
+    koji su heartbeat-ali — peer koji nikad nije poslao /presence ima
+    online=false i last_seen_ms=null."""
+    now = time.time()
+    snap: dict[str, dict[str, Any]] = {}
+    for peer in sorted(set(tokens.values())):
+        ts = last_seen_by_peer.get(peer)
+        if ts is None:
+            snap[peer] = {"online": False, "last_seen_ms": None, "secs_ago": None}
+        else:
+            secs = now - ts
+            snap[peer] = {
+                "online": secs < PRESENCE_TTL_S,
+                "last_seen_ms": int(ts * 1000),
+                "secs_ago": round(secs, 1),
+            }
+    return snap
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     assert store is not None
@@ -183,15 +214,41 @@ async def health() -> dict[str, Any]:
     pending_by_peer: dict[str, int] = {}
     for target in pending_target_by_corr.values():
         pending_by_peer[target] = pending_by_peer.get(target, 0) + 1
+    presence = _presence_snapshot()
+    online_peers = sorted([p for p, s in presence.items() if s["online"]])
     return {
         "ok": True,
         "phase": 2,
         "known_agents": sorted(set(tokens.values())),
+        "online_agents": online_peers,
         "pending_asks": len(pending_asks),
         "pending_by_peer": pending_by_peer,
         "max_pending_per_peer": MAX_PENDING_PER_PEER,
         "audit_count": len(audit),
         "store": store_health,
+        "presence_ttl_s": PRESENCE_TTL_S,
+    }
+
+
+@app.post("/presence")
+async def presence_heartbeat(sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
+    """v1.8.0: peer daemon kuca svakih ~15s da javi 'zivim'. Bearer auth → peer_id
+    iz tokens mappinga; ne treba body. Idempotentno: samo update-uje last_seen."""
+    last_seen_by_peer[sender] = time.time()
+    return {"ok": True, "peer": sender, "ttl_s": PRESENCE_TTL_S}
+
+
+@app.get("/presence")
+async def presence_snapshot(sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
+    """v1.8.0: vrati ko je online u celoj mrezi. Bearer auth (svaki authenticated
+    peer moze citati — to je jedna od stvari koju treba da zna).
+
+    Response: {peers: {id: {online, last_seen_ms, secs_ago}}, ttl_s, server_time_ms}"""
+    return {
+        "peers": _presence_snapshot(),
+        "ttl_s": PRESENCE_TTL_S,
+        "server_time_ms": int(time.time() * 1000),
+        "you": sender,
     }
 
 

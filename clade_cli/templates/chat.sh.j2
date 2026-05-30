@@ -65,21 +65,42 @@ if [[ "$DAEMON_STATUS" == "offline" ]]; then
   echo ""
 fi
 
-# v1.4.6: pitaj relay ko je registrovan (known_agents iz /health).
-# Napomena: known_agents znaci "ima validan bearer token" — NE garantuje da
-# je daemon trenutno pokrenut. Pravi liveness check trebao bi peer-side ping
-# endpoint koji v1.4.x nema. Zato chat.sh prikazuje "registrovan" status, a ne
-# "ONLINE". (Mozes da posaljes ask sa kratkim timeout-om da proveris stvarno.)
-REGISTERED_PEERS=""
-if HEALTH=$(curl -sf --max-time 3 "${RELAY_URL}/health" 2>/dev/null); then
-  REGISTERED_PEERS=$(echo "$HEALTH" | python3 -c "
+# v1.8.0: pitaj relay ko je STVARNO online (presence heartbeat track-er).
+# Pre v1.8.0: known_agents iz /health = ima validan token, NE = daemon tece.
+# Sad: GET /presence vraca {peer: {online, secs_ago}} — online znaci da je
+# peer-ov daemon poslao heartbeat u zadnjih ~30s.
+BEARER_TOKEN=$(python3 -c "
+import yaml
+try:
+    print(yaml.safe_load(open('$PEER_YAML')).get('bearer_token', ''))
+except Exception:
+    print('')
+" 2>/dev/null)
+ONLINE_PEERS=""
+OFFLINE_PEERS=""
+PEER_STATUS_JSON=""
+if [[ -n "$BEARER_TOKEN" ]]; then
+  PEER_STATUS_JSON=$(curl -sf --max-time 3 \
+    -H "Authorization: Bearer $BEARER_TOKEN" \
+    "${RELAY_URL}/presence" 2>/dev/null || echo "")
+  if [[ -n "$PEER_STATUS_JSON" ]]; then
+    ONLINE_PEERS=$(echo "$PEER_STATUS_JSON" | python3 -c "
 import sys, json
 try:
   d = json.load(sys.stdin)
-  print(','.join(d.get('known_agents', [])))
+  print(','.join(sorted(p for p, s in d.get('peers', {}).items() if s.get('online'))))
 except Exception:
   pass
 " 2>/dev/null || echo "")
+    OFFLINE_PEERS=$(echo "$PEER_STATUS_JSON" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)
+  print(','.join(sorted(p for p, s in d.get('peers', {}).items() if not s.get('online'))))
+except Exception:
+  pass
+" 2>/dev/null || echo "")
+  fi
 fi
 
 # v1.4.8: ucitaj pending send-ove iz audit DB-a (thread_history) od last_seen
@@ -130,15 +151,25 @@ fi
 # Pisi sada kao novi last_seen (sledeci put nece prikazati ove)
 date +%s%3N > "$LAST_SEEN_FILE" 2>/dev/null
 
-# v1.4.6: parse-uj lokalan yaml za listu peer-ova sa imenima/rolama
+# v1.8.0: peer directory sa LIVE statusom (online/offline iz /presence)
 PEER_DIRECTORY=""
 if [[ -f "$PEER_YAML" ]]; then
   PEER_DIRECTORY=$(python3 -c "
-import sys, yaml
+import sys, yaml, json
 try:
   with open('$PEER_YAML') as f:
     cfg = yaml.safe_load(f)
-  registered = set('${REGISTERED_PEERS}'.split(',')) if '${REGISTERED_PEERS}' else set()
+  online = set('${ONLINE_PEERS}'.split(',')) if '${ONLINE_PEERS}' else set()
+  offline = set('${OFFLINE_PEERS}'.split(',')) if '${OFFLINE_PEERS}' else set()
+  known = online | offline
+  # secs_ago iz JSON-a (ako imamo)
+  secs_map = {}
+  try:
+    d = json.loads('''${PEER_STATUS_JSON}''') if '${PEER_STATUS_JSON}' else {}
+    for p, s in d.get('peers', {}).items():
+      secs_map[p] = s.get('secs_ago')
+  except Exception:
+    pass
   lines = []
   for pid, entry in (cfg.get('peers') or {}).items():
     if isinstance(entry, dict):
@@ -146,10 +177,23 @@ try:
       role = (entry.get('role') or '').split(chr(10))[0][:80]
     else:
       name, role = pid, ''
-    note = 'registrovan u relay-u' if pid in registered else 'NIJE u relay tokens — bug, prijavi'
-    line = f'  - {name} (id={pid}, {note})'
+    if pid in online:
+      sa = secs_map.get(pid)
+      sa_str = f', last seen {sa:.0f}s ago' if isinstance(sa, (int, float)) else ''
+      status = f'ONLINE{sa_str}'
+    elif pid in offline:
+      sa = secs_map.get(pid)
+      if sa is None:
+        status = 'offline (daemon nikad nije starovao)'
+      else:
+        status = f'offline (last seen {sa:.0f}s ago, daemon zaglavljen ili mreza?)'
+    elif not known:
+      status = 'status nepoznat (relay /presence nedostupan)'
+    else:
+      status = 'NIJE u relay tokens (bug, prijavi)'
+    line = f'  - {name} (id={pid}) — {status}'
     if role:
-      line += f' — {role}'
+      line += f' [role: {role}]'
     lines.append(line)
   print(chr(10).join(lines))
 except Exception as e:
@@ -177,30 +221,40 @@ SYSTEM_PROMPT="Ti pomazes korisniku da komunicira preko Clade A2A mreze.
 KORISNIK je peer '${MY_NAME}' (ID: ${MY_ID}). Njegov daemon je ${DAEMON_STATUS}.
 Relay: ${RELAY_URL}.
 
-Drugi peer-ovi (iz tvog yaml allowlist-a):
+Trenutno stanje peer-ova (snapshot pri start-u chat.sh-a, presence TTL ~35s):
 ${PEER_DIRECTORY:-  (lista nedostupna)}${_PENDING_SECTION}
 
-Bitno: 'registrovan u relay-u' znaci samo da peer ima validan token. Da bi
-zaista odgovorio mora i njegov daemon teci na njegovoj masini — to se vidi
-tek ako ask vrati reply ili 504 timeout.
+VAZNO o live statusu (v1.8.0): gornji snapshot je validan u trenutku kad si
+otvorio chat.sh. Stanje se menja. Ako korisnik pita 'ko je sada online' —
+pozovi clade_peers() umesto da odgovaras iz ovog snapshot-a. clade_peers ti
+vraca real-time {peer, online, secs_ago, role}; jeftin je (jedan HTTP poziv,
+NE pinguje peer-ove sa claude --print-om).
 
 Kako da pricas sa peer-ovima preko MCP tool-a 'clade':
-- Pitaj peer-a i cekaj odgovor:  clade_message(to='<id>', content='...', expect_reply=True, timeout_s=90)
-- Posalji bez cekanja:            clade_message(to='<id>', content='...', expect_reply=False)
-- Reply na primljen ask:          clade_reply(correlation_id, response, to)
-- Pregled inbox-a:                clade_inbox()  (vraca busy ako daemon tece — to je normalno)
+- Ko je online sada:              clade_peers()    # PROVERAVAJ OVAJ TOOL prvo kad korisnik pita za status
+- Pitaj peer-a i cekaj odgovor:   clade_message(to='<id>', content='...', expect_reply=True, timeout_s=90)
+- Posalji bez cekanja:             clade_message(to='<id>', content='...', expect_reply=False)
+- Reply na primljen ask:           clade_reply(correlation_id, response, to)
+- Pregled inbox-a:                 clade_inbox()  (vraca busy ako daemon tece — to je normalno)
 
 Korisnik moze reci:
+  'Ko je u mrezi?'      → clade_peers()
   'Pitaj Charlie ...'   → clade_message(to='charlie', ..., expect_reply=True)
   'Reci Bobu da ...'    → clade_message(to='bob', ..., expect_reply=False)
 
 Ako 504 timeout — sender Claude dobija humani msg (v1.4.6+): 'Peer 'X' nije
 odgovorio... daemon nije pokrenut'. Prenesi to korisniku jasno + predlozi
-da pokrene start.sh na peer masini."
+da pokrene start.sh na peer masini. Ako vec znas iz clade_peers da je offline,
+nemoj ni da pokusas ask — direktno kazi da je offline."
 
 cd "$WORKDIR"
 echo "Opening Claude in $WORKDIR..."
 echo "Status: my daemon ${DAEMON_STATUS}"
-[[ -n "$REGISTERED_PEERS" ]] && echo "Peers registrovani u relay-u: ${REGISTERED_PEERS//,/, }"
+if [[ -n "$ONLINE_PEERS" ]] || [[ -n "$OFFLINE_PEERS" ]]; then
+  [[ -n "$ONLINE_PEERS" ]]  && echo "  online:  ${ONLINE_PEERS//,/, }"
+  [[ -n "$OFFLINE_PEERS" ]] && echo "  offline: ${OFFLINE_PEERS//,/, }"
+else
+  echo "  presence: nedostupno (relay /presence ne odgovara)"
+fi
 echo ""
 exec claude --append-system-prompt "$SYSTEM_PROMPT"

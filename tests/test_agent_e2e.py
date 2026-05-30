@@ -684,3 +684,104 @@ async def test_daemon_call_claude_includes_role_in_prompt(monkeypatch, tmp_path)
     assert "data analyst" in prompt
     assert "Bob Bobic" in prompt
     assert "Backend dev" in prompt
+
+
+# ---- v1.8.0: presence + clade_peers ----
+
+@pytest.mark.asyncio
+async def test_relay_presence_endpoint_tracks_heartbeat(
+    relay_process, relay_url, token_for_alice, token_for_bob,
+):
+    """POST /presence belezi last_seen; GET /presence vraca peer kao online u
+    okviru TTL-a. Default TTL u test instanci je 35s pa svez heartbeat → online."""
+    headers_a = {"Authorization": f"Bearer {token_for_alice}"}
+    headers_b = {"Authorization": f"Bearer {token_for_bob}"}
+
+    async with httpx.AsyncClient() as c:
+        # Pre bilo kakvog heartbeat-a — oba offline
+        r = await c.get(f"{relay_url}/presence", headers=headers_a, timeout=3)
+        assert r.status_code == 200
+        peers = r.json()["peers"]
+        assert "alice" in peers and "bob" in peers
+        # Stanje moze biti online ili offline u zavisnosti od prethodnih testova —
+        # ne tvrdimo na starting state. Tvrdimo na efekat heartbeat-a:
+
+        # Alice heartbeat
+        r = await c.post(f"{relay_url}/presence", headers=headers_a, timeout=3)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["peer"] == "alice"
+
+        # Sad alice mora biti online sa malim secs_ago
+        r = await c.get(f"{relay_url}/presence", headers=headers_b, timeout=3)
+        peers = r.json()["peers"]
+        assert peers["alice"]["online"] is True
+        assert peers["alice"]["secs_ago"] is not None
+        assert peers["alice"]["secs_ago"] < 5
+
+
+@pytest.mark.asyncio
+async def test_relay_presence_requires_auth(relay_process, relay_url):
+    """POST i GET /presence bez bearer-a → 401."""
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{relay_url}/presence", timeout=3)
+        assert r.status_code == 401
+        r = await c.get(f"{relay_url}/presence", timeout=3)
+        assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_health_exposes_online_agents(
+    relay_process, relay_url, token_for_alice,
+):
+    """/health.online_agents je podskup known_agents — sadrzi samo peer-ove
+    koji su skoro heartbeat-ali. Korisno za setup-server proxy."""
+    headers = {"Authorization": f"Bearer {token_for_alice}"}
+    async with httpx.AsyncClient() as c:
+        await c.post(f"{relay_url}/presence", headers=headers, timeout=3)
+        r = await c.get(f"{relay_url}/health", timeout=3)
+        body = r.json()
+        assert "online_agents" in body
+        assert "alice" in body["online_agents"]
+        assert "presence_ttl_s" in body
+
+
+@pytest.mark.asyncio
+async def test_clade_peers_tool_returns_structured_list(
+    relay_process, alice_config, bob_config, token_for_alice, token_for_bob, relay_url,
+):
+    """clade_peers MCP tool: posle heartbeat-a oba peer-a, vraca obojicu kao
+    online + ukljucuje role iz alice yaml-a za bob."""
+    # Heartbeat oba (alice + bob) preko HTTP da relay zna da su online
+    async with httpx.AsyncClient() as c:
+        await c.post(f"{relay_url}/presence",
+                     headers={"Authorization": f"Bearer {token_for_alice}"}, timeout=3)
+        await c.post(f"{relay_url}/presence",
+                     headers={"Authorization": f"Bearer {token_for_bob}"}, timeout=3)
+
+    alice = _load_agent_module(alice_config)
+    res = await alice.clade_peers()
+    assert res.get("ok") is True
+    assert res["you"] == "alice"
+    peer_ids = {p["peer_id"] for p in res["peers"]}
+    assert {"alice", "bob"}.issubset(peer_ids)
+    by_id = {p["peer_id"]: p for p in res["peers"]}
+    assert by_id["alice"]["self"] is True
+    assert by_id["bob"]["self"] is False
+    assert by_id["alice"]["online"] is True
+    assert by_id["bob"]["online"] is True
+    # summary format: "2 online / 2 total" — bar 2 online posto smo oba heartbeat-ali
+    assert "online" in res["summary"]
+
+
+@pytest.mark.asyncio
+async def test_clade_peers_handles_relay_down(alice_config, monkeypatch):
+    """Ako relay nedostupan, clade_peers vraca humani error, ne raises."""
+    alice = _load_agent_module(alice_config)
+    # Override relay URL na nepostojeci port
+    alice.cfg.relay_url = "http://127.0.0.1:1"  # port 1 = connection refused
+    res = await alice.clade_peers()
+    assert "error" in res
+    # Humani error pominjej relay nedostupnost
+    assert "relay" in res["error"].lower() or "connect" in res["error"].lower()

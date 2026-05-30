@@ -433,6 +433,7 @@ def create_app(state: AppState) -> FastAPI:
         )
 
     # v1.7.0 (C4): realtime status JSON za setup result page polling
+    # v1.8.0: pridodaj live presence (online/offline po peer-u + secs_ago)
     @app.get("/setup/{project_token}/status")
     async def setup_status(project_token: str) -> dict:
         setup = state.setups.get(project_token)
@@ -446,16 +447,26 @@ def create_app(state: AppState) -> FastAPI:
             "relay_pid": setup.relay_subprocess.pid if relay_alive else None,
             "peers": list(setup.peers.keys()),
         }
-        # Pita relay /health za live podatke (known_agents, pending_by_peer)
+        # Pita relay /health za live podatke + /presence za online status.
+        # Koristimo prvog peer-ovog bearer da prodjemo auth na /presence
+        # (relay je interni i svaki authenticated agent moze citati).
         try:
             import httpx as _httpx  # noqa: PLC0415
+            first_bearer = next(iter(setup.peers.values())).bearer_token if setup.peers else None
+            headers = {"Authorization": f"Bearer {first_bearer}"} if first_bearer else {}
             with _httpx.Client(timeout=2) as c:
                 r = c.get(f"{setup.relay_url}/health")
                 if r.status_code == 200:
                     h = r.json()
                     status["relay_known_agents"] = h.get("known_agents", [])
+                    status["online_agents"] = h.get("online_agents", [])
                     status["pending_by_peer"] = h.get("pending_by_peer", {})
                     status["audit_count"] = h.get("audit_count", 0)
+                    status["presence_ttl_s"] = h.get("presence_ttl_s")
+                if first_bearer:
+                    rp = c.get(f"{setup.relay_url}/presence", headers=headers)
+                    if rp.status_code == 200:
+                        status["presence"] = rp.json().get("peers", {})
         except Exception as e:
             status["relay_error"] = str(e)[:120]
         return status

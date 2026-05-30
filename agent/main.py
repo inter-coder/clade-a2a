@@ -745,6 +745,76 @@ async def clade_reply(correlation_id: str, response: dict[str, Any], to: str) ->
 
 
 @mcp.tool()
+async def clade_peers() -> dict[str, Any]:
+    """Vrati listu peer-ova u A2A mrezi sa LIVE statusom (ko je online sada).
+
+    Cita iz relay-evog /presence endpoint-a (v1.8.0 protokol). Online znaci da
+    je peer-ov daemon poslao heartbeat u poslednjih ~30s — bukvalno radi i moze
+    da odgovori. Offline = daemon nije pokrenut, ili je mreza pala, ili je peer
+    samo registrovan ali nikad nije startovao daemon.
+
+    Koristi OVAJ tool umesto da pingujes peer-a sa clade_message kad samo hoces
+    da vidis ko je dostupan — jedan jeftin HTTP poziv umesto N spawn-ovanih
+    claude --print procesa.
+
+    Returns:
+        {
+          "ok": True,
+          "you": "<my_id>",
+          "ttl_s": 35,
+          "peers": [
+            {
+              "peer_id": "bob",
+              "name": "Bob Bobic",        # iz mog cfg (ako PeerInfo)
+              "role": "DBA, Postgres",    # iz mog cfg (kratko, prvi red role-a)
+              "online": True,
+              "secs_ago": 7.3,             # vreme od zadnjeg heartbeat-a
+              "self": False
+            },
+            ...
+          ],
+          "summary": "2 online / 3 total"
+        }
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{cfg.relay_url}/presence", headers=_auth_headers())
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        return {"error": _humanize_network_error(e, "(relay)")}
+    if r.status_code != 200:
+        return {"error": _humanize_relay_error(r.status_code, r.text, "(relay)", "peers")}
+
+    data = r.json()
+    relay_peers: dict[str, dict[str, Any]] = data.get("peers", {})
+    peers_out: list[dict[str, Any]] = []
+    for peer_id in sorted(relay_peers.keys()):
+        snap = relay_peers[peer_id]
+        info = cfg.peer_info(peer_id) if peer_id != cfg.my_id else None
+        name = (info.name if info else None) or (cfg.name if peer_id == cfg.my_id else peer_id)
+        role_short = ""
+        if peer_id == cfg.my_id and cfg.role:
+            role_short = cfg.role.strip().split("\n")[0][:80]
+        elif info and info.role:
+            role_short = info.role.strip().split("\n")[0][:80]
+        peers_out.append({
+            "peer_id": peer_id,
+            "name": name,
+            "role": role_short or None,
+            "online": snap.get("online", False),
+            "secs_ago": snap.get("secs_ago"),
+            "self": peer_id == cfg.my_id,
+        })
+    online_n = sum(1 for p in peers_out if p["online"])
+    return {
+        "ok": True,
+        "you": data.get("you", cfg.my_id),
+        "ttl_s": data.get("ttl_s"),
+        "peers": peers_out,
+        "summary": f"{online_n} online / {len(peers_out)} total",
+    }
+
+
+@mcp.tool()
 async def clade_outbox_status() -> dict[str, Any]:
     """Vraca stanje outbox-a: koliko poruka ceka retry, koliko ih je dostavljeno,
     koliko ih je dead-letter-ovano. Korisno za debug kad agent JAVI da je

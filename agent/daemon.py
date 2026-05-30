@@ -43,6 +43,10 @@ POLL_INTERVAL_S = 2.0
 CLAUDE_TIMEOUT_S = 90
 OUTBOX_CHECK_INTERVAL_S = 30.0
 OUTBOX_STALE_WARN_S = 30.0      # poruka starija od ovog → warn log
+# v1.8.0: heartbeat ka relay-ev /presence endpoint. Default 15s znači peer pada
+# offline (TTL 35s) ako 3 propusti za redom — daje toleranciju na trenutne
+# network glitche bez pravljenja false-offline flicker-a.
+PRESENCE_HEARTBEAT_S = float(os.environ.get("CLADE_DAEMON_PRESENCE_S", "15"))
 # v1.4.8: max paralelnih claude --print spawn-ova po daemon-u.
 # Stress test je pokazao da Claude API rate-limit-uje 5 paralelnih, pa svaki
 # traje 5x duze i sve timeout-uju. Pri 2 paralelna su realno latencije.
@@ -756,6 +760,36 @@ async def outbox_monitor_loop(cfg, audit_conn, outbox_mod) -> None:
                     outbox_mod.mark_failed(audit_conn, row["id"], str(e)[:80])
 
 
+async def presence_loop(cfg) -> None:
+    """v1.8.0: heartbeat ka relay /presence svakih PRESENCE_HEARTBEAT_S sekundi.
+    Bez ovog, GET /presence ne vidi nas peer kao online iako daemon tece.
+
+    Prvi heartbeat ide odmah pri startu — peer treba da se vidi online u
+    setup-server UI-u cim daemon krene, ne posle 15s."""
+    headers = {"Authorization": f"Bearer {cfg.bearer_token}"}
+    url = f"{cfg.relay_url}/presence"
+    consecutive_errors = 0
+    async with httpx.AsyncClient(timeout=5) as client:
+        while not SHUTDOWN_EVENT.is_set():
+            try:
+                r = await client.post(url, headers=headers)
+                if r.status_code == 200:
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                    if consecutive_errors == 1 or consecutive_errors % 30 == 0:
+                        log(f"{YELLOW}presence heartbeat HTTP {r.status_code}: {r.text[:80]}{RESET}", "")
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                consecutive_errors += 1
+                if consecutive_errors == 1 or consecutive_errors % 30 == 0:
+                    log(f"{YELLOW}presence heartbeat: relay nedostupan ({type(e).__name__}){RESET}", "")
+            try:
+                await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=PRESENCE_HEARTBEAT_S)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+
 async def config_watcher_loop(cfg, config_path: Path) -> None:
     """v1.7.0 (C8): hot-reload peer allowlist iz yaml-a kad fajl menja mtime.
     Bez restart-a daemona, user moze: edit-uje peer.yaml (npr doda novog peer-a
@@ -981,6 +1015,8 @@ def main() -> None:
         # v1.7.0 (C8): config watcher za hot-reload peer allowlist
         config_path = Path(os.environ.get("CLADE_CONFIG", "./config.yaml")).expanduser()
         watcher = asyncio.create_task(config_watcher_loop(cfg, config_path))
+        # v1.8.0: presence heartbeat — relay zna ko je online u svakom momentu
+        presence = asyncio.create_task(presence_loop(cfg))
         try:
             await poll  # poll_loop drzi semantiku zivota; ostali rade u pozadini
         finally:
@@ -999,7 +1035,8 @@ def main() -> None:
                     log(f"{YELLOW}timeout — {len(_inflight_tasks)} ask-ova nedovrseno{RESET}", "")
             monitor.cancel()
             watcher.cancel()
-            for t in (monitor, watcher):
+            presence.cancel()
+            for t in (monitor, watcher, presence):
                 try:
                     await t
                 except asyncio.CancelledError:
