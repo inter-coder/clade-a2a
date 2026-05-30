@@ -166,8 +166,15 @@ def write_minimal_settings(workdir: Path) -> Path:
 
     skillOverrides = "off" za skills koji nemaju veze sa daemon-ovim zadatkom.
     skillListingBudgetFraction smanjuje budzet skills lista u promptu.
-    spinnerTipsEnabled=false uklanja UI noise (svejedno smo headless, ali iz reda)."""
+    spinnerTipsEnabled=false uklanja UI noise (svejedno smo headless, ali iz reda).
+
+    permissions.allow — pre-odobreni Read/Bash za putanje koje daemon-spawn
+    Claude rutinski inspektuje kad odgovara peer-u (sopstveni config, audit DB,
+    install dir). Bez ovoga, svaki self-introspection trazi user permission
+    prompt — sto u headless modu blokira sve. YOLO mode preskace ovo svejedno
+    (`--dangerously-skip-permissions`), ali safe mode (default) ih treba."""
     import json as _json  # noqa: PLC0415
+    home = os.environ.get("HOME", str(Path.home()))
     settings_dir = workdir / ".claude"
     settings_dir.mkdir(parents=True, exist_ok=True)
     settings_path = settings_dir / "settings.json"
@@ -187,6 +194,28 @@ def write_minimal_settings(workdir: Path) -> Path:
         },
         "spinnerTipsEnabled": False,
         "skillListingBudgetFraction": 0.005,
+        "permissions": {
+            "allow": [
+                # Self-introspection (config + install + state)
+                f"Read({home}/clade-agent/**)",
+                f"Read({home}/.clade/**)",
+                "Read(/opt/clade-a2a/**)",
+                f"Read({workdir}/**)",
+                # Basic shell komande za dijagnostiku — bez argumenta validacije
+                # jer daemon-Claude ce ih koristiti sa raznim path-ovima
+                "Bash(ls:*)",
+                "Bash(cat:*)",
+                "Bash(head:*)",
+                "Bash(tail:*)",
+                "Bash(pwd)",
+                "Bash(echo:*)",
+                "Bash(grep:*)",
+                "Bash(find:*)",
+                "Bash(wc:*)",
+                "Bash(file:*)",
+                "Bash(stat:*)",
+            ],
+        },
     }, indent=2))
     return settings_path
 

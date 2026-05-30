@@ -367,6 +367,15 @@ def test_daemon_minimal_settings_written():
         assert data["spinnerTipsEnabled"] is False
         assert data["skillOverrides"]["/init"] == "off"
         assert data["skillOverrides"]["frontend-design"] == "off"
+        # v1.4.3: pre-odobrene permissions za self-introspection — bez ovog
+        # daemon-spawn Claude (safe mode) visi cekajuci user prompt za ls/cat.
+        allow = data["permissions"]["allow"]
+        assert "Read(/opt/clade-a2a/**)" in allow
+        assert any(p.endswith("/clade-agent/**)") and p.startswith("Read(") for p in allow)
+        assert any(p.endswith("/.clade/**)") and p.startswith("Read(") for p in allow)
+        assert f"Read({wd}/**)" in allow
+        assert "Bash(ls:*)" in allow
+        assert "Bash(cat:*)" in allow
 
 
 def test_daemon_minimal_env_constants():
