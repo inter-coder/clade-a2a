@@ -229,6 +229,97 @@ def banner(msg: str) -> None:
     print(f"\n{BOLD}{CYAN}═══ {msg} ═══{RESET}", flush=True)
 
 
+def _collect_env_context(workdir: Path, cfg) -> dict[str, str]:
+    """v1.4.4: pokupi realan host kontekst koji ide u prompt — hostname, primary
+    LAN IP, danasnji datum, workdir, audit_db, sopstvenu OS verziju.
+
+    Razlog: bez ovog peer Claude ne zna gde se nalazi pa odgovara generike
+    ("verovatno X.Y.z"), umesto da pokrene `uname -r` ili procita /etc/hostname.
+    Test je pokazao halucinaciju na pitanje "koja verzija kernela?"."""
+    import socket as _socket  # noqa: PLC0415
+    import datetime as _dt  # noqa: PLC0415
+
+    hostname = ""
+    primary_ip = ""
+    try:
+        hostname = _socket.gethostname()
+    except Exception:
+        pass
+    try:
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            primary_ip = s.getsockname()[0]
+    except OSError:
+        primary_ip = "127.0.0.1"
+
+    return {
+        "hostname": hostname or "(unknown)",
+        "primary_ip": primary_ip,
+        "today": _dt.date.today().isoformat(),
+        "workdir": str(workdir),
+        "audit_db": str(Path(cfg.audit_db).expanduser()),
+        "config_path": os.environ.get("CLADE_CONFIG", "(unset)"),
+    }
+
+
+def _format_peer_directory(cfg, exclude_id: str) -> str:
+    """v1.4.4: kratka lista poznatih peer-ova sa imenom + role-om za sistem
+    prompt. Bez ovog Bob (npr) ne zna ko je sve u mrezi pa govori "ne znam
+    druge peer-ove" iako su u cfg.peers.
+
+    exclude_id: trenutni sender — ne treba u listi (vec je predstavljen)."""
+    lines: list[str] = []
+    for peer_id, entry in cfg.peers.items():
+        if peer_id == exclude_id:
+            continue
+        if hasattr(entry, "name"):  # PeerInfo
+            name = entry.name or peer_id
+            role_short = (entry.role or "").strip().split("\n")[0][:80]
+            line = f"- {name} (id: {peer_id})"
+            if role_short:
+                line += f" — {role_short}"
+        else:  # legacy string-secret
+            line = f"- {peer_id}"
+        lines.append(line)
+    return "\n".join(lines) if lines else "(nema drugih peer-ova osim sendera)"
+
+
+def _extra_add_dirs(cfg, workdir: Path) -> list[str]:
+    """v1.4.4: putanje koje peer Claude TREBA da moze da cita van workdir-a.
+    Bez `--add-dir` Claude Code drzi hard path sandbox cak i u YOLO modu —
+    cak ni `Read(...)` u `permissions.allow` to ne probija.
+
+    Lista:
+      - parent direktorijum CLADE_CONFIG-a (peer yaml live tu)
+      - parent direktorijum audit_db (.clade po default-u)
+      - /opt/clade-a2a (install dir; ako postoji)
+    """
+    dirs: list[str] = []
+    config_p = os.environ.get("CLADE_CONFIG")
+    if config_p:
+        try:
+            dirs.append(str(Path(config_p).expanduser().parent.resolve()))
+        except Exception:
+            pass
+    try:
+        dirs.append(str(Path(cfg.audit_db).expanduser().parent.resolve()))
+    except Exception:
+        pass
+    for fixed in ["/opt/clade-a2a"]:
+        if Path(fixed).exists():
+            dirs.append(fixed)
+    # dedupe + skloni one koji su unutar workdir-a (ne treba im --add-dir)
+    seen: set[str] = set()
+    out: list[str] = []
+    wd_resolved = str(workdir.resolve())
+    for d in dirs:
+        if d in seen or d == wd_resolved:
+            continue
+        seen.add(d)
+        out.append(d)
+    return out
+
+
 async def call_claude(question: str, dangerous: bool, workdir: Path,
                        from_peer: str, my_id: str,
                        thread_context: str = "",
@@ -236,7 +327,8 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
                        name: str | None = None,
                        role: str | None = None,
                        from_peer_name: str | None = None,
-                       from_peer_role: str | None = None) -> str:
+                       from_peer_role: str | None = None,
+                       cfg=None) -> str:
     """Spawn `claude --print` da izracuna odgovor na peer-ovo pitanje.
 
     Workdir kontrolise koji CLAUDE.md i .mcp.json se ucitavaju — ali za
@@ -249,7 +341,11 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
 
     name + role (v1.3.0): identifikacija + system prompt opisuje TI si KO.
     Ako je dat role — prepend kao primary kontekst (pred sve ostalo). Ime
-    zameni generic my_id u self-reference."""
+    zameni generic my_id u self-reference.
+
+    cfg (v1.4.4): ceo Config — koristimo za peer directory i --add-dir
+    putanje. Default None radi backward-compat sa testovima koji direktno
+    pozivaju call_claude bez cfg-a."""
     display_self = name or my_id
     display_peer = from_peer_name or from_peer
 
@@ -264,23 +360,66 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
             + f"\n\n{role.strip()}\n=== KRAJ ===\n"
         )
 
-    # 2) Ko te pita
+    # 2) v1.4.4: realan host kontekst — peer Claude zna GDE je
+    if cfg is not None:
+        env_ctx = _collect_env_context(workdir, cfg)
+        sections.append(
+            "=== TVOJ KONTEKST (host) ===\n"
+            f"Hostname: {env_ctx['hostname']}\n"
+            f"Primary IP (LAN): {env_ctx['primary_ip']}\n"
+            f"Datum: {env_ctx['today']}\n"
+            f"Workdir: {env_ctx['workdir']}\n"
+            f"Tvoj config: {env_ctx['config_path']}\n"
+            f"Audit DB: {env_ctx['audit_db']}\n"
+            "=== KRAJ ===\n"
+        )
+
+    # 3) v1.4.4: STA TI MOZES (eksplicitno, da peer ne hallucinishe)
+    sections.append(
+        "=== TVOJE MOGUCNOSTI ===\n"
+        f"- Bash u workdir-u {workdir} (uname, hostname, ls, cat, ps, "
+        f"curl prema lokalnoj mrezi — pokreni komandu kad treba TACAN podatak; "
+        f"ne pogadjaj ako mozes da proveris).\n"
+        "- Read/Write fajlova u workdir-u (van workdir-a samo Read za putanje "
+        "koje su ti dodate preko --add-dir; ako Read padne, fajl je van sandbox-a).\n"
+        "- clade_* MCP tool-ovi da pitas drugog peer-a — koristi SAMO ako ti "
+        "tema zaista zahteva njegov ekspertski domen ili njegov host pristup.\n"
+        "STA NE MOZES: pisati van workdir-a, sudo, install paketa, web browse "
+        "(osim ako rola eksplicitno trazi). Ne pretpostavljaj capabilities koje "
+        "nisu navedene — radije reci 'nemam X' nego da izmislis.\n"
+        "=== KRAJ ===\n"
+    )
+
+    # 4) v1.4.4: peer directory (ko je jos u mrezi)
+    if cfg is not None:
+        sections.append(
+            "=== OSTALI PEER-OVI U MREZI ===\n"
+            f"{_format_peer_directory(cfg, exclude_id=from_peer)}\n"
+            "Mozes ih pitati preko clade_message(to=<id>, content=..., "
+            "expect_reply=True).\n"
+            "=== KRAJ ===\n"
+        )
+
+    # 5) Ko te pita + pravila odgovora
     peer_intro = f"Drugi peer agent '{display_peer}'"
     if from_peer_role and from_peer_role.strip():
         peer_intro += f" ({from_peer_role.strip()[:120]})"
     sections.append(
-        f"{peer_intro} ti je upravo postavio pitanje. "
-        f"Odgovori u skladu sa svojom ulogom, sazeto i tacno. "
-        f"Ako ne znas odgovor, kazi to direktno — ne izmisljaj. "
-        f"Imas pristup clade_* MCP tool-ovima ako ti TREBA da pitas treceg peer-a, "
-        f"ali izbegavaj — preferiraj direktan odgovor.\n\n"
-        f"AKO pitanje je dvosmisleno ili fali kontekst koji ti treba da odgovoris, "
-        f"zapocni svoj odgovor sa marker-om `[CLARIFY]` i postavi clarify pitanje. "
-        f"Daemon ce taj odgovor oznaciti kao clarify i interactive Claude na drugoj "
-        f"strani ce ga prikazati korisniku."
+        f"{peer_intro} ti je upravo postavio pitanje. Pravila odgovora:\n"
+        "1. Pricaj sa NJIM (peer-to-peer), ne sa korisnikom. "
+        "Ne kazi 'morace$ ti to da uradis' — peer ne moze da menja sesiju.\n"
+        "2. Ako mozes Bash komandom (npr `uname -r`, `hostname -I`) ili Read-om "
+        "da dodjes do TACNOG odgovora, prvo to pokreni — pa odgovori. "
+        "Halucinacija ('verovatno X') je gora od priznanja 'ne mogu'.\n"
+        "3. Sazet i konkretan odgovor u njegovoj ulozi.\n"
+        "4. AKO pitanje je dvosmisleno ili fali kontekst, zapocni odgovor sa "
+        "marker-om `[CLARIFY]` i postavi clarify pitanje. Daemon ce to oznaciti "
+        "i interactive Claude na drugoj strani ce ga prikazati korisniku.\n"
+        "5. Ako stvarno ne mozes (sandbox/permisije/nedostatak alata), kazi to "
+        "direktno + reci sta bi peer trebao da uradi sam."
     )
 
-    # 3) Thread continuity (ako ima istorije)
+    # 6) Thread continuity (ako ima istorije)
     if thread_context:
         sections.append(thread_context)
 
@@ -299,6 +438,12 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
     args = ["claude", "--print", "--append-system-prompt", system_prompt]
     if mcp_config.exists():
         args.extend(["--mcp-config", str(mcp_config)])
+    # v1.4.4: --add-dir za putanje van workdir-a (config, audit db, install dir).
+    # `permissions.allow` u settings.json NE prosiruje fs access — to ide samo
+    # preko --add-dir. Pre v1.4.4 peer Claude nije mogao ni svoj config da cita.
+    if cfg is not None:
+        for d in _extra_add_dirs(cfg, workdir):
+            args.extend(["--add-dir", d])
     if dangerous:
         args.append("--dangerously-skip-permissions")
     args.extend(["--", safe_question])
@@ -413,6 +558,7 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
             name=cfg.name, role=cfg.role,
             from_peer_name=peer_info.name if peer_info else None,
             from_peer_role=peer_info.role if peer_info else None,
+            cfg=cfg,
         )
         elapsed = time.time() - t0
 

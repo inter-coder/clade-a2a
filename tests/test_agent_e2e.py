@@ -378,6 +378,75 @@ def test_daemon_minimal_settings_written():
         assert "Bash(cat:*)" in allow
 
 
+def test_daemon_env_context_collected():
+    """v1.4.4: _collect_env_context vraca hostname/ip/datum/putanje koje
+    se injectuju u sistem prompt. Bez ovog peer Claude halucinise meta info."""
+    import tempfile  # noqa: PLC0415
+    from agent.daemon import _collect_env_context  # noqa: PLC0415
+
+    class _CfgStub:
+        audit_db = "/tmp/x-audit.db"
+
+    with tempfile.TemporaryDirectory() as d:
+        ctx = _collect_env_context(Path(d), _CfgStub())
+    # Sve kljucevi su tu, i imaju non-empty string vrednosti
+    assert set(ctx.keys()) == {"hostname", "primary_ip", "today",
+                                "workdir", "audit_db", "config_path"}
+    assert ctx["hostname"]
+    assert ctx["primary_ip"]
+    # Datum mora biti ISO format YYYY-MM-DD
+    assert len(ctx["today"]) == 10 and ctx["today"][4] == "-"
+
+
+def test_daemon_peer_directory_excludes_sender():
+    """_format_peer_directory mora da iskljuci sender peer-a (vec je u
+    'Drugi peer ti je postavio pitanje' sekciji) i da listira ostale sa
+    imenom + role-om."""
+    from agent.daemon import _format_peer_directory  # noqa: PLC0415
+
+    class _PI:
+        def __init__(self, name, role):
+            self.name = name
+            self.role = role
+    class _Cfg:
+        peers = {
+            "bob": _PI("Bob", "backend"),
+            "charlie": _PI("Charlie", "qa\nsecond line ignored"),
+            "alice": _PI("Alice", "frontend"),
+        }
+
+    out = _format_peer_directory(_Cfg(), exclude_id="bob")
+    assert "Bob" not in out  # sender iskljucen
+    assert "Charlie" in out
+    assert "Alice" in out
+    assert "qa" in out  # samo prvi red role-a
+    assert "second line" not in out
+
+
+def test_daemon_extra_add_dirs_includes_config_and_audit_parents(monkeypatch, tmp_path):
+    """_extra_add_dirs mora da vrati parent CLADE_CONFIG-a + parent audit_db-a,
+    i da preskoci dirs koji su unutar workdir-a."""
+    from agent.daemon import _extra_add_dirs  # noqa: PLC0415
+
+    cfg_p = tmp_path / "cfgs" / "alice.yaml"
+    cfg_p.parent.mkdir()
+    cfg_p.touch()
+    monkeypatch.setenv("CLADE_CONFIG", str(cfg_p))
+
+    class _Cfg:
+        audit_db = str(tmp_path / "audits" / "alice.db")
+    (tmp_path / "audits").mkdir()
+
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+
+    dirs = _extra_add_dirs(_Cfg(), workdir)
+    assert str(tmp_path / "cfgs") in dirs
+    assert str(tmp_path / "audits") in dirs
+    # workdir samo ne sme biti dva puta
+    assert str(workdir) not in dirs
+
+
 def test_daemon_minimal_env_constants():
     """MINIMAL_HEADLESS_ENV ima ocekivane suppress varijable."""
     from agent.daemon import MINIMAL_HEADLESS_ENV  # noqa: PLC0415
