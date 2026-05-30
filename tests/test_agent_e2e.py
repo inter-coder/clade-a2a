@@ -400,6 +400,30 @@ def test_humanize_relay_errors_map_known_codes(alice_config):
     assert "relay.log" in msg500  # pominje gde da pogleda log
 
 
+def test_humanize_503_with_retry_after(alice_config):
+    """v1.5.0: relay back-pressure 503 mora biti pretvoren u humani message
+    sa retry_after_s ako relay vraca strukturisani body."""
+    import json as _j  # noqa: PLC0415
+    alice = _load_agent_module(alice_config)
+    bp_body = _j.dumps({
+        "detail": {
+            "detail": "Peer busy",
+            "retry_after_s": 12,
+            "pending_count": 4,
+            "target_peer": "bob",
+        }
+    })
+    msg = alice._humanize_relay_error(503, bp_body, "bob", "ask")
+    assert "bob" in msg
+    assert "zauzet" in msg.lower()
+    assert "12" in msg  # retry_after stigao
+    assert "pending" in msg.lower()
+
+    # 503 bez strukturisanog detail-a (npr inbox full) → generic message
+    msg2 = alice._humanize_relay_error(503, "Inbox full", "bob", "send")
+    assert "503" in msg2 and "retry" in msg2.lower()
+
+
 def test_humanize_network_errors(alice_config):
     """v1.4.6: ConnectError + Timeout u humani format."""
     import httpx as _h  # noqa: PLC0415

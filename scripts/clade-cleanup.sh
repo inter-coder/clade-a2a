@@ -66,6 +66,10 @@ echo ""
 
 DAEMON_PIDS=$(_python_pgrep "agent\.daemon")
 LOCKS=$(ls ~/.clade/*-daemon.lock 2>/dev/null || true)
+# v1.5.0: workdir-ovi su sad u ~/.clade/wd-<peer>-* (ne /tmp). SIGKILL ostavi
+# orphan, ali daemon na startup ih sam pociscava — ovo je fallback za slucaj
+# da user uopste ne pokrene daemon ponovo.
+WORKDIRS=$(ls -d ~/.clade/wd-* 2>/dev/null || true)
 PID_FILES=$(find ~/clade-projects -maxdepth 3 \( -name "*-daemon.pid" -o -name "relay.pid" \) 2>/dev/null || true)
 RELAY_PIDS=""
 if [[ "$INCLUDE_RELAY" == "true" ]]; then
@@ -108,6 +112,18 @@ if [[ -n "$LOCKS" ]]; then
   done <<< "$LOCKS"
 else
   echo -e "${GREEN}✓${RESET} nema lock fajlova"
+fi
+
+echo ""
+if [[ -n "$WORKDIRS" ]]; then
+  echo -e "${YELLOW}Daemon workdir-i u ~/.clade/wd-*:${RESET}"
+  while read -r d; do
+    [[ -z "$d" ]] && continue
+    sz=$(du -sh "$d" 2>/dev/null | awk '{print $1}')
+    echo -e "  $d  ${DIM}($sz)${RESET}"
+  done <<< "$WORKDIRS"
+else
+  echo -e "${GREEN}✓${RESET} nema orphan workdir-ova u ~/.clade/wd-*"
 fi
 
 echo ""
@@ -165,7 +181,7 @@ if [[ "$INCLUDE_SETUPS" == "true" ]]; then
 fi
 
 # ---- Sta uraditi ----
-if [[ -z "$DAEMON_PIDS" ]] && [[ -z "$LOCKS" ]] && [[ -z "$PID_FILES" ]] && [[ -z "$RELAY_PIDS" ]] && [[ -z "$SETUPS" ]]; then
+if [[ -z "$DAEMON_PIDS" ]] && [[ -z "$LOCKS" ]] && [[ -z "$PID_FILES" ]] && [[ -z "$RELAY_PIDS" ]] && [[ -z "$SETUPS" ]] && [[ -z "$WORKDIRS" ]]; then
   echo ""
   echo -e "${GREEN}${BOLD}Sve je vec cisto.${RESET}"
   exit 0
@@ -224,6 +240,15 @@ if [[ -n "$LOCKS" ]]; then
     [[ -z "$lock" ]] && continue
     [[ -e "$lock" ]] && rm -f "$lock" && echo -e "${GREEN}✓${RESET} rm $lock"
   done <<< "$LOCKS"
+fi
+
+if [[ -n "$WORKDIRS" ]]; then
+  while read -r d; do
+    [[ -z "$d" ]] && continue
+    # Skip ako neki daemon je vlasnik (lock pokazuje na zivi PID iste pee-r-a).
+    # Konzervativan: ne brisemo workdir-e dok nismo ubili daemons.
+    rm -rf "$d" && echo -e "${GREEN}✓${RESET} rm -rf $d"
+  done <<< "$WORKDIRS"
 fi
 
 if [[ -n "$PID_FILES" ]]; then

@@ -51,6 +51,9 @@ CLAUDE_CONCURRENCY = int(os.environ.get("CLADE_DAEMON_CONCURRENCY", "2"))
 SHUTDOWN_EVENT = asyncio.Event()
 _claude_semaphore: asyncio.Semaphore | None = None  # init u poll_loop
 _inflight_tasks: set[asyncio.Task] = set()
+# v1.5.0: corr_id → asyncio.Task za cancel protocol. Kad sender posalje
+# kind=cancel envelope sa target_correlation_id, daemon lookup ovde + task.cancel().
+_inflight_by_corr: dict[str, asyncio.Task] = {}
 
 
 # ---- Payload → question text ekstrakcija ----
@@ -480,6 +483,17 @@ async def call_claude(question: str, dangerous: bool, workdir: Path,
         except asyncio.TimeoutError:
             proc.kill()
         return f"[daemon: claude --print timeout posle {CLAUDE_TIMEOUT_S}s]"
+    except asyncio.CancelledError:
+        # v1.5.0: sender posaljnao cancel — ubij claude --print da ne trose
+        # API/CPU. Pre toga (v1.4.x) ovo se ne hvatalo, pa cancel je samo
+        # uklanjao task ali claude proces je trajao do kraja sam.
+        log(f"{YELLOW}  ⊘ cancel primljen, terminate claude --print PID {proc.pid}{RESET}", "")
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            proc.kill()
+        raise
 
     if proc.returncode != 0:
         err_text = err.decode("utf-8", errors="replace")[:200].strip()
@@ -540,6 +554,19 @@ async def process_message(env: dict, dangerous: bool, workdir: Path, cfg, sign_f
     # Record incoming u thread_history (v1.1.0)
     if record_thread_fn:
         record_thread_fn(env["msg_id"], "in", from_agent, kind, payload)
+
+    # v1.5.0: cancel protokol — sender posaljnao da otkaze tekuci ask
+    if kind == "cancel":
+        target_corr = payload.get("target_correlation_id") if isinstance(payload, dict) else None
+        log(f"{YELLOW}← cancel{RESET} {DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET} → target {target_corr}", "")
+        if target_corr and target_corr in _inflight_by_corr:
+            task = _inflight_by_corr[target_corr]
+            task.cancel()
+            audit_log_fn("in", env["msg_id"], from_agent, "cancel", "cancelled", target_corr)
+        else:
+            audit_log_fn("in", env["msg_id"], from_agent, "cancel", "no_match",
+                         f"target {target_corr} nije in-flight")
+        return
 
     if kind == "send":
         log(f"{CYAN}← send  {RESET}{DIM}from{RESET} {BOLD}{from_agent}{RESET} {DIM}({msg_id_short}){RESET}: {payload}", "")
@@ -675,8 +702,11 @@ async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
                                 sign_fn, audit_log_fn, **kwargs) -> None:
     """v1.4.8: Wrapper koji uzima semafor pre nego spawn-uje claude --print.
     Bez ovog 5+ paralelnih ask-ova izaziva Claude API rate-limit pa svaki
-    traje 5x duze i sve timeout-uju (potvrdjeno u v1.4.7 stress testu)."""
-    if _claude_semaphore is None:
+    traje 5x duze i sve timeout-uju (potvrdjeno u v1.4.7 stress testu).
+
+    v1.5.0: cancel-poruke (kind=cancel) zaobilaze semafor — kratke su, ne
+    spawn-uju claude --print, i moraju biti odmah obradjene."""
+    if env.get("kind") == "cancel" or _claude_semaphore is None:
         await process_message(env, dangerous, workdir, cfg, sign_fn, audit_log_fn, **kwargs)
         return
     async with _claude_semaphore:
@@ -734,6 +764,14 @@ async def poll_loop(dangerous: bool, workdir: Path, cfg, sign_fn, verify_fn, aud
                         ))
                         _inflight_tasks.add(task)
                         task.add_done_callback(_inflight_tasks.discard)
+                        # v1.5.0: registruj samo ask task-ove (po corr_id) da
+                        # bi cancel mogao da ih nadje. send/cancel ne treba.
+                        if env.get("kind") == "ask":
+                            corr = env.get("correlation_id")
+                            if corr:
+                                _inflight_by_corr[corr] = task
+                                task.add_done_callback(
+                                    lambda _t, c=corr: _inflight_by_corr.pop(c, None))
                 else:
                     consecutive_errors += 1
                     if consecutive_errors <= 3 or consecutive_errors % 30 == 0:
@@ -778,18 +816,31 @@ def main() -> None:
     lock_path = acquire_lock(cfg)
 
     # Daemon workdir za claude --print
-    # v1.4.5: ako mkdtemp-ujemo, registruj cleanup na exit (pre toga su workdir-ovi
-    # `/tmp/clade-daemon-*-<random>` cureli zauvek — vidljivo na disku).
-    workdir_is_temp = not args.workdir
+    # v1.5.0: workdir je u dirname(audit_db)/wd-<peer>-<rand> umesto /tmp.
+    # Pre toga: atexit cleanup nije radio za SIGKILL (proces je odmah ubijen,
+    # atexit ne pokrece) — workdir-ovi su cureli u /tmp. Sad smo u
+    # known mestu (~/.clade/) gde clade-cleanup moze pouzdano da nadje orphane.
+    # Startup cleanup: brisemo stare wd-<my_id>-* (file lock vec garantuje
+    # da nema drugog tekuceg daemon-a za isti peer, pa svi stari su orphan).
+    workdir_is_managed = not args.workdir
     if args.workdir:
         workdir = Path(args.workdir).expanduser().resolve()
         workdir.mkdir(parents=True, exist_ok=True)
     else:
-        import tempfile
-        workdir = Path(tempfile.mkdtemp(prefix=f"clade-daemon-{cfg.my_id}-"))
-    if workdir_is_temp:
-        import atexit
-        import shutil
+        import shutil  # noqa: PLC0415
+        audit_parent = Path(cfg.audit_db).expanduser().parent
+        audit_parent.mkdir(parents=True, exist_ok=True)
+        for old in audit_parent.glob(f"wd-{cfg.my_id}-*"):
+            if old.is_dir():
+                try:
+                    shutil.rmtree(old)
+                except OSError:
+                    pass
+        workdir = audit_parent / f"wd-{cfg.my_id}-{secrets.token_urlsafe(6)}"
+        workdir.mkdir(parents=True)
+    if workdir_is_managed:
+        import atexit  # noqa: PLC0415
+        import shutil  # noqa: PLC0415
         atexit.register(lambda: shutil.rmtree(workdir, ignore_errors=True))
 
     # Generisi .mcp.json u workdir-u (v1.0.0 P0#1: claude --print dobija clade tools eager)

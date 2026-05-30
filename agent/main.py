@@ -15,6 +15,7 @@ Backoff: 1/2/4/8/16/30s, max 6 attempts → dead-letter. Sinhroni
 expect_reply=True NE ide u outbox (korisnik retry).
 """
 
+import asyncio
 import hashlib
 import hmac as hmac_module
 import json
@@ -360,6 +361,23 @@ def _humanize_relay_error(status: int, text: str, to: str, kind: str) -> str:
             f"(c) network kasnjenje do relay-a. "
             f"Retry-uj, ili posalji `expect_reply=False` da se queue-uje."
         )
+    if status == 503:
+        # v1.5.0: relay back-pressure ili inbox full. Pokusaj da parse-ujemo
+        # retry_after_s iz body-ja (relay vraca strukturisani detail za bp).
+        try:
+            import json as _j  # noqa: PLC0415
+            d = _j.loads(text)
+            retry_s = d.get("detail", {}).get("retry_after_s") if isinstance(d.get("detail"), dict) else None
+            if retry_s:
+                return (
+                    f"Peer '{to}' je trenutno zauzet "
+                    f"({d['detail'].get('pending_count', '?')} pending ask-ova). "
+                    f"Retry kroz ~{retry_s}s, ili posalji `expect_reply=False` "
+                    f"da poruka ode u inbox bez čekanja."
+                )
+        except Exception:
+            pass
+        return f"Relay je odbio zahtev (503): {text[:200]}. Sacekaj malo pa retry."
     if status == 401:
         return (
             f"Auth ne prolazi (401). Tvoj bearer_token ne odgovara nijednom "
@@ -403,6 +421,27 @@ def _humanize_network_error(exc: Exception, to: str) -> str:
 
 
 # ---- Core send/ask helperi (zajednicka logika za clade_message + wrapperi) ----
+
+async def _send_cancel(to: str, target_correlation_id: str) -> None:
+    """v1.5.0: posalji cancel envelope da peer otpusti claude --print resurs
+    kad sender timeout-uje ili odustane. Best-effort — gresci se logguju ali
+    ne vracaju (sender vec ima error koji prosledjuje korisniku)."""
+    err = _check_peer(to)
+    if err:
+        return
+    payload = {"target_correlation_id": target_correlation_id}
+    env = _make_envelope("cancel", to, payload)
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(f"{cfg.relay_url}/send", json=env,
+                                  headers=_auth_headers(), timeout=5)
+        if r.status_code == 200:
+            audit_log("out", env["msg_id"], to, "cancel", "sent", target_correlation_id)
+        else:
+            audit_log("out", env["msg_id"], to, "cancel", f"http_{r.status_code}", r.text[:100])
+    except Exception as e:
+        audit_log("out", env["msg_id"], to, "cancel", "net_err", str(e)[:100])
+
 
 async def _do_send(to: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Fire-and-forget send. Outbox-aware. Vidi clade_message(expect_reply=False)."""
@@ -456,9 +495,18 @@ async def _do_ask(to: str, payload: dict[str, Any], timeout_s: int) -> dict[str,
             )
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         audit_log("out", env["msg_id"], to, "ask", "net_err", type(e).__name__)
+        # v1.5.0: posalji cancel sinhrono (await) — `create_task` bi mogao biti
+        # otkazan ako pozivajuci loop se zatvori (npr u testu sa asyncio.run).
+        # _send_cancel ima sopstveni 5s timeout pa ne moze blokirati dugacko.
+        await _send_cancel(to, correlation_id)
         return {"error": _humanize_network_error(e, to)}
     if r.status_code != 200:
         audit_log("out", env["msg_id"], to, "ask", f"http_{r.status_code}", r.text[:200])
+        # v1.5.0: ako je 504 (timeout), peer mozda jos radi claude --print —
+        # posalji cancel da otpusti API/CPU resurs. NE saljemo za 503 (peer ni
+        # nije primio ask) ili 401 (cancel ce takodje pasti).
+        if r.status_code == 504:
+            await _send_cancel(to, correlation_id)
         return {"error": _humanize_relay_error(r.status_code, r.text, to, "ask")}
 
     data = r.json()

@@ -33,6 +33,11 @@ NONCE_TTL_S = 300       # 5min anti-replay window
 TS_SKEW_MS = 300_000    # 5min timestamp skew tolerance
 INBOX_MAX = 1000        # safety cap per agent
 AUDIT_MAX = 10_000
+# v1.5.0: back-pressure — broj istovremenih pending ask-ova ka istom peer-u.
+# Stress test je pokazao da peer daemon spawn-uje claude --print sa
+# semaforom CLADE_DAEMON_CONCURRENCY (default 2) pa visak samo cetka u
+# inbox-u. Relay sad odbija sa 503 + Retry-After ako vec ima vise od ovog.
+MAX_PENDING_PER_PEER = int(os.environ.get("CLADE_RELAY_MAX_PENDING_PER_PEER", "4"))
 
 
 # ---- State ----
@@ -44,6 +49,9 @@ store: Store | None = None
 # NAMERA: ovo OSTAJE u memoriji. asyncio.Future nije serijabilan, a ako
 # relay restartuje, sve in-flight asks fail-uju (klijent retry-uje).
 pending_asks: dict[str, asyncio.Future] = {}
+# v1.5.0: per-peer pending count za back-pressure. corr_id → target_peer.
+# Sync sa pending_asks (add/remove zajedno).
+pending_target_by_corr: dict[str, str] = {}
 
 # tokens[token_str] = agent_id — ucitano sa diska, immutable
 tokens: dict[str, str] = {}
@@ -199,7 +207,11 @@ async def send(env: Envelope, sender: Annotated[str, Depends(authenticate)]) -> 
 
 @app.post("/ask")
 async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> dict[str, Any]:
-    """Sinhroni ask — blokira do reply ili timeout."""
+    """Sinhroni ask — blokira do reply ili timeout.
+
+    v1.5.0: back-pressure — vraca 503 + Retry-After ako ka istom peer-u vec
+    postoji MAX_PENDING_PER_PEER pending ask-ova. Sprecava 5-u-jedan stress
+    koji preopretacuje peer-ov claude --print semafor (default 2)."""
     env_dict = body.env.model_dump()
     if not body.env.correlation_id:
         raise HTTPException(400, "correlation_id required for ask")
@@ -209,13 +221,32 @@ async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> d
         log(env_dict, f"rejected:{err[:30]}")
         raise HTTPException(400, err)
 
+    target = body.env.to_agent
+    pending_for_target = sum(1 for t in pending_target_by_corr.values() if t == target)
+    if pending_for_target >= MAX_PENDING_PER_PEER:
+        log(env_dict, f"backpressure:{pending_for_target}_pending")
+        retry_s = max(5, body.timeout_s // 6)
+        raise HTTPException(
+            503,
+            {
+                "detail": f"Peer '{target}' vec ima {pending_for_target} pending ask-ova "
+                          f"(max {MAX_PENDING_PER_PEER}). Retry kroz ~{retry_s}s.",
+                "retry_after_s": retry_s,
+                "pending_count": pending_for_target,
+                "target_peer": target,
+            },
+            headers={"Retry-After": str(retry_s)},
+        )
+
     fut: asyncio.Future = asyncio.get_event_loop().create_future()
     pending_asks[body.env.correlation_id] = fut
+    pending_target_by_corr[body.env.correlation_id] = target
 
     assert store is not None
     ok = await store.inbox_push(body.env.to_agent, env_dict, INBOX_MAX)
     if not ok:
         pending_asks.pop(body.env.correlation_id, None)
+        pending_target_by_corr.pop(body.env.correlation_id, None)
         raise HTTPException(503, f"Inbox for {body.env.to_agent} full")
     log(env_dict, "asked")
 
@@ -228,6 +259,7 @@ async def ask(body: AskBody, sender: Annotated[str, Depends(authenticate)]) -> d
         raise HTTPException(504, f"Ask timed out after {body.timeout_s}s")
     finally:
         pending_asks.pop(body.env.correlation_id, None)
+        pending_target_by_corr.pop(body.env.correlation_id, None)
 
 
 @app.post("/reply")
