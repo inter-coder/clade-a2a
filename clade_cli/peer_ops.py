@@ -300,6 +300,7 @@ def update_peer_op(
     role: str | None = None,
     display_name: str | None = None,
     extra_add_dirs: list[str] | None = None,
+    scribe: dict | None = None,
     setup_server_url_for_reload: str | None = None,
 ) -> dict[str, Any]:
     setup = json.loads((project_dir / "setup.json").read_text())
@@ -322,8 +323,10 @@ def update_peer_op(
     if extra_add_dirs is not None:
         # tracked in own yaml only
         fields_changed.append("extra_add_dirs")
+    if scribe is not None:
+        fields_changed.append("scribe")
 
-    # 1. update target peer's OWN yaml (role, name, extra_add_dirs)
+    # 1. update target peer's OWN yaml (role, name, extra_add_dirs, scribe)
     own_paths = [project_dir / f"{peer_id}.yaml", agent_dir / f"{peer_id}.yaml"]
     yaml_text_new = None
     for op in own_paths:
@@ -336,6 +339,15 @@ def update_peer_op(
             data["name"] = display_name
         if extra_add_dirs is not None:
             data["extra_add_dirs"] = list(extra_add_dirs)
+        if scribe is not None:
+            # v1.17.0: scribe config edit from web. Empty dict / None disables; otherwise
+            # merge into existing block (preserves docs_repo_path if user didn't supply it).
+            if not scribe:
+                data.pop("scribe", None)
+            else:
+                existing = data.get("scribe") or {}
+                existing.update({k: v for k, v in scribe.items() if v is not None})
+                data["scribe"] = existing
         _write_yaml(op, data)
         if yaml_text_new is None:
             yaml_text_new = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)

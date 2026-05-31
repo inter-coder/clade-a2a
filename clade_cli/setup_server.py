@@ -85,6 +85,23 @@ class UpdatePeerRequest(BaseModel):
     role: str | None = None
     display_name: str | None = None
     extra_add_dirs: list[str] | None = None
+    # v1.17.0: scribe edit from web. Empty dict disables; set keys merge into existing block.
+    scribe: dict | None = None
+
+
+# v1.17.0: pause/resume body (peer_id optional → global)
+class PauseRequest(BaseModel):
+    peer_id: str | None = None
+
+
+# v1.18.0: chat send from web UI
+class ChatSendRequest(BaseModel):
+    from_peer: str
+    to_peer: str
+    content: str
+    expect_reply: bool = False
+    timeout_s: int = Field(90, ge=5, le=300)
+    thread_id: str | None = None
 
 
 class UpdateTeamsRequest(BaseModel):
@@ -548,11 +565,12 @@ def create_app(state: AppState) -> FastAPI:
                     d = yaml.safe_load(yaml_path.read_text()) or {}
                     peers_data[pid] = {
                         "extra_add_dirs": d.get("extra_add_dirs", []),
+                        "scribe": d.get("scribe") or {},  # v1.17.0: prefill Edit form
                     }
                     if not teams_data and d.get("teams"):
                         teams_data = d["teams"]
                 except Exception:
-                    peers_data[pid] = {"extra_add_dirs": []}
+                    peers_data[pid] = {"extra_add_dirs": [], "scribe": {}}
         tmpl = env.get_template("result.html")
         return tmpl.render(
             setup=setup,
@@ -756,6 +774,7 @@ def create_app(state: AppState) -> FastAPI:
                 role=req.role,
                 display_name=req.display_name,
                 extra_add_dirs=req.extra_add_dirs,
+                scribe=req.scribe,
                 setup_server_url_for_reload=None,
             )
         except ValueError as e:
@@ -850,6 +869,161 @@ def create_app(state: AppState) -> FastAPI:
             "setups_removed": removed_setups,
             "peer_count_delta": peer_count_delta,
         }
+
+    # --- v1.17.0: kill-switch via web UI (mirrors clade-pause/clade-resume CLI) ---
+
+    def _pause_dir() -> Path:
+        override = os.environ.get("CLADE_PAUSE_DIR")
+        return Path(override).expanduser() if override else (Path.home() / ".clade")
+
+    def _sentinel_path(peer_id: str | None) -> Path:
+        d = _pause_dir()
+        return d / (f"{peer_id}-pause" if peer_id else "pause")
+
+    @app.post("/api/setup/{project_token}/pause")
+    async def pause(project_token: str, req: PauseRequest) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        if req.peer_id and req.peer_id not in setup.peers:
+            raise HTTPException(400, f"Unknown peer_id '{req.peer_id}' in this setup")
+        p = _sentinel_path(req.peer_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(exist_ok=True)
+        return {"ok": True, "sentinel": str(p),
+                "scope": "global" if req.peer_id is None else f"peer:{req.peer_id}"}
+
+    @app.post("/api/setup/{project_token}/resume")
+    async def resume(project_token: str, req: PauseRequest) -> dict:
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        p = _sentinel_path(req.peer_id)
+        existed = p.exists()
+        if existed:
+            p.unlink()
+        return {"ok": True, "sentinel": str(p), "removed": existed,
+                "scope": "global" if req.peer_id is None else f"peer:{req.peer_id}"}
+
+    @app.get("/api/setup/{project_token}/scribe-state")
+    async def scribe_state(project_token: str) -> dict:
+        """Per-peer scribe state: yaml scribe config + persisted state file + sentinel status."""
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        d = _pause_dir()
+        global_paused = (d / "pause").exists()
+        peers_out: dict[str, dict] = {}
+        for pid in setup.peers.keys():
+            yaml_path = state.data_dir / setup.project_token / f"{pid}.yaml"
+            try:
+                ycfg = yaml.safe_load(yaml_path.read_text()) or {}
+            except Exception:
+                ycfg = {}
+            scribe_cfg = ycfg.get("scribe") or {}
+            audit_db = ycfg.get("audit_db", "")
+            state_file = None
+            persisted = {}
+            if audit_db:
+                state_file = Path(audit_db).expanduser().parent / f"{pid}-scribe-state.json"
+                if state_file.exists():
+                    try:
+                        persisted = json.loads(state_file.read_text())
+                    except Exception:
+                        persisted = {}
+            per_peer_sentinel = (d / f"{pid}-pause").exists()
+            peers_out[pid] = {
+                "scribe_enabled": bool(scribe_cfg.get("enabled")),
+                "interval_minutes": scribe_cfg.get("interval_minutes"),
+                "max_rounds_per_day": scribe_cfg.get("max_rounds_per_day"),
+                "docs_repo_path": scribe_cfg.get("docs_repo_path"),
+                "round_prompt": scribe_cfg.get("round_prompt"),
+                "last_head_sha": persisted.get("last_head_sha"),
+                "rounds_today": len(persisted.get("rounds_today") or []),
+                "paused": global_paused or per_peer_sentinel,
+                "paused_scope": (
+                    f"peer:{pid}" if per_peer_sentinel
+                    else ("global" if global_paused else None)
+                ),
+                "state_file": str(state_file) if state_file else None,
+            }
+        return {
+            "pause_dir": str(d),
+            "global_paused": global_paused,
+            "peers": peers_out,
+        }
+
+    @app.post("/api/setup/{project_token}/chat/send")
+    async def chat_send(project_token: str, req: ChatSendRequest) -> dict:
+        """v1.18.0: send a clade_message as `from_peer`. Used by the Chat tab.
+        Validates peers, calls clade_cli.web_sender, returns the result dict."""
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        if req.from_peer not in setup.peers:
+            raise HTTPException(400, f"Unknown from_peer '{req.from_peer}' in this setup")
+        if req.to_peer not in setup.peers:
+            raise HTTPException(400, f"Unknown to_peer '{req.to_peer}' in this setup")
+        if req.from_peer == req.to_peer:
+            raise HTTPException(400, "from_peer and to_peer must differ")
+        from clade_cli import web_sender as _ws  # noqa: PLC0415
+        yaml_path = state.data_dir / setup.project_token / f"{req.from_peer}.yaml"
+        try:
+            result = _ws.send_message(
+                from_yaml_path=yaml_path,
+                to_peer=req.to_peer,
+                content=req.content,
+                expect_reply=req.expect_reply,
+                timeout_s=req.timeout_s,
+                thread_id=req.thread_id,
+            )
+        except _ws.WebSendError as e:
+            raise HTTPException(400, f"send failed: {e}") from e
+        return result
+
+    @app.get("/api/setup/{project_token}/repo-log")
+    async def repo_log(project_token: str, limit: int = 20) -> dict:
+        """Recent commits to the AITF docs repo (taken from any peer's docs_repo_path
+        or extra_add_dirs[0]). Used by the result page's live activity panel."""
+        setup = state.setups.get(project_token)
+        if setup is None:
+            raise HTTPException(404, "Setup not found")
+        repo_path: str | None = None
+        for pid in setup.peers.keys():
+            try:
+                y = yaml.safe_load((state.data_dir / setup.project_token / f"{pid}.yaml").read_text()) or {}
+            except Exception:
+                continue
+            cand = (y.get("scribe") or {}).get("docs_repo_path")
+            if not cand:
+                cand = (y.get("extra_add_dirs") or [None])[0]
+            if cand and Path(cand).expanduser().is_dir():
+                repo_path = str(Path(cand).expanduser().resolve())
+                break
+        if not repo_path:
+            return {"repo_path": None, "commits": [], "error": "no docs_repo_path found on any peer"}
+        try:
+            limit = max(1, min(limit, 100))
+            r = subprocess.run(
+                ["git", "-C", repo_path, "log",
+                 f"--pretty=format:%H%x09%h%x09%aI%x09%an%x09%s", f"-{limit}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                return {"repo_path": repo_path, "commits": [],
+                        "error": (r.stderr or "git log failed").strip()[:200]}
+            commits = []
+            for line in r.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split("\t", 4)
+                if len(parts) < 5:
+                    continue
+                commits.append({"sha": parts[0], "short": parts[1], "iso": parts[2],
+                                "author": parts[3], "subject": parts[4]})
+            return {"repo_path": repo_path, "commits": commits}
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return {"repo_path": repo_path, "commits": [], "error": str(e)[:200]}
 
     return app
 

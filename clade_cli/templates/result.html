@@ -53,6 +53,41 @@
       font-weight: 500;
     }
     .subtitle { color: var(--text-dim); font-size: 0.95rem; }
+
+    /* v1.17.1: tab navigation (Overview / Peers / Teams / Install) */
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.5rem;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      padding: 0.6rem 1rem;
+      font-family: inherit;
+      font-size: 0.92rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      white-space: nowrap;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 500;
+    }
+    body[data-active-tab="overview"] .card:not(.tab-overview),
+    body[data-active-tab="peers"]    .card:not(.tab-peers),
+    body[data-active-tab="teams"]    .card:not(.tab-teams),
+    body[data-active-tab="install"]  .card:not(.tab-install),
+    body[data-active-tab="chat"]     .card:not(.tab-chat) {
+      display: none;
+    }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -254,7 +289,7 @@
     .toast-error   { color: var(--warning); }
   </style>
 </head>
-<body>
+<body data-active-tab="overview">
   <div class="container">
     <header style="display:flex;align-items:center;gap:1rem">
       <svg width="56" height="56" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Clade A2A" style="flex-shrink:0">
@@ -286,7 +321,16 @@
       </div>
     </header>
 
-    <div class="card">
+    {# v1.17.1: tab navigation — Overview is the default "running" view #}
+    <nav class="tabs">
+      <button class="tab-btn" data-tab="overview" onclick="setActiveTab('overview')">Overview</button>
+      <button class="tab-btn" data-tab="peers"    onclick="setActiveTab('peers')">Peers</button>
+      <button class="tab-btn" data-tab="teams"    onclick="setActiveTab('teams')">Teams</button>
+      <button class="tab-btn" data-tab="chat"     onclick="setActiveTab('chat')">Chat</button>
+      <button class="tab-btn" data-tab="install"  onclick="setActiveTab('install')">Install</button>
+    </nav>
+
+    <div class="card tab-overview">
       <h2>Project</h2>
       <div class="meta">
         <div class="key">Relay URL</div>
@@ -311,7 +355,7 @@
     </div>
 
     <!-- v1.12.1: one-shot multi-peer installer -->
-    <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
+    <div class="card tab-install" style="background:#fef7f3;border-left:4px solid #DA7756">
       <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Install all peers on this machine</h2>
       <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
         Single-machine setup? Run one command to install every peer locally (writes
@@ -327,7 +371,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card tab-peers">
       <h2>Peers <span style="font-size: 0.7em; color: var(--text-dim);">({{ setup.peers|length }})</span></h2>
       {% for peer_id, peer in setup.peers.items() %}
       <div class="peer-card" data-peer-id="{{ peer_id }}">
@@ -357,6 +401,35 @@
             <label>extra_add_dirs <span class="hint">(one path per line)</span></label>
             <textarea name="extra_add_dirs" rows="3" placeholder="/home/user/projects/foo">{{ (peers_data.get(peer_id, {}).get('extra_add_dirs', []))|join('\n') }}</textarea>
           </div>
+
+          {# v1.17.0: scribe config edit (Phase B/C/D self-driving loop) #}
+          {% set sc = peers_data.get(peer_id, {}).get('scribe', {}) %}
+          <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem;margin:0.5rem 0">
+            <legend style="font-size:0.85rem;color:var(--text-dim);padding:0 0.4rem">Scribe self-driving loop</legend>
+            <div class="checkbox-row" style="margin:0.25rem 0">
+              <input type="checkbox" name="scribe_enabled" {% if sc.get('enabled') %}checked{% endif %}>
+              <label style="margin:0;font-weight:normal;font-size:0.9rem">Enabled (peer auto-ticks on new git commits)</label>
+            </div>
+            <div class="grid grid-2" style="gap:0.5rem;margin:0.5rem 0">
+              <div class="field" style="margin:0">
+                <label style="font-size:0.85rem">interval_minutes <span class="hint">(5-1440)</span></label>
+                <input type="number" name="scribe_interval_minutes" min="5" max="1440" value="{{ sc.get('interval_minutes', 60) }}">
+              </div>
+              <div class="field" style="margin:0">
+                <label style="font-size:0.85rem">max_rounds_per_day <span class="hint">(1-288)</span></label>
+                <input type="number" name="scribe_max_rounds_per_day" min="1" max="288" value="{{ sc.get('max_rounds_per_day', 24) }}">
+              </div>
+            </div>
+            <div class="field" style="margin:0.5rem 0">
+              <label style="font-size:0.85rem">docs_repo_path <span class="hint">(empty = falls back to extra_add_dirs[0])</span></label>
+              <input type="text" name="scribe_docs_repo_path" value="{{ sc.get('docs_repo_path', '') }}" placeholder="/absolute/path/to/repo">
+            </div>
+            <div class="field" style="margin:0.5rem 0 0">
+              <label style="font-size:0.85rem">round_prompt <span class="hint">(role-specific override; empty = default scribe prompt)</span></label>
+              <textarea name="scribe_round_prompt" rows="5">{{ sc.get('round_prompt', '') }}</textarea>
+            </div>
+          </fieldset>
+
           <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
             <button class="btn btn-primary btn-sm" onclick="savePeerEdit('{{ peer_id }}')">Save</button>
             <button class="btn btn-sm" onclick="togglePeerEdit('{{ peer_id }}')">Cancel</button>
@@ -380,7 +453,7 @@
     </div>
 
     <!-- Add new peer card -->
-    <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
+    <div class="card tab-peers" style="background:#fef7f3;border-left:4px solid #DA7756">
       <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Add a new peer</h2>
       <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
         Generates HMAC secrets, updates every existing peer's yaml (their daemons hot-reload within ~5s), writes new yaml + scripts + workdir.
@@ -425,7 +498,7 @@
     </div>
 
     <!-- Teams card -->
-    <div class="card">
+    <div class="card tab-teams">
       <h2>Teams</h2>
       <p class="hint" style="margin:0 0 0.75rem">Edit team membership. Saves on each change. Daemons hot-reload via config_watcher_loop.</p>
       <div id="teams-list">
@@ -456,7 +529,92 @@
       </div>
     </div>
 
-    <div class="card">
+    {# v1.17.0: Cycle activity card — kill-switch + scribe state + recent commits #}
+    <div class="card tab-overview" style="border-left:4px solid #DA7756">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem">
+        <h2 style="margin:0">Cycle activity <span style="font-size:0.7em;color:var(--text-dim)">(scribe + kill-switch, refresh every 5s)</span></h2>
+        <div style="display:flex;gap:0.5rem">
+          <button id="global-pause-btn" class="btn btn-danger btn-sm" onclick="killSwitch(null, true)">Pause ALL</button>
+          <button id="global-resume-btn" class="btn btn-sm" onclick="killSwitch(null, false)" style="display:none">Resume ALL</button>
+        </div>
+      </div>
+      <div id="cycle-state-error" style="color:var(--danger);margin-bottom:0.5rem;display:none;font-size:0.85rem"></div>
+
+      <h3 style="font-size:0.95rem;margin:0.75rem 0 0.4rem">Per-peer scribe state</h3>
+      <div style="overflow-x:auto">
+        <table id="scribe-table" style="width:100%;border-collapse:collapse;font-size:0.88rem">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border);text-align:left">
+              <th style="padding:0.4rem 0.6rem">Peer</th>
+              <th style="padding:0.4rem 0.6rem">Enabled</th>
+              <th style="padding:0.4rem 0.6rem">Interval</th>
+              <th style="padding:0.4rem 0.6rem">last_head_sha</th>
+              <th style="padding:0.4rem 0.6rem">Rounds today</th>
+              <th style="padding:0.4rem 0.6rem">State</th>
+              <th style="padding:0.4rem 0.6rem">Action</th>
+            </tr>
+          </thead>
+          <tbody id="scribe-tbody"><tr><td colspan="7" style="padding:0.5rem;color:var(--text-dim)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <h3 style="font-size:0.95rem;margin:1rem 0 0.4rem">Recent commits in docs_repo</h3>
+      <div id="repo-log" style="font-family:ui-monospace,Consolas,monospace;font-size:0.82rem;background:var(--code-bg);padding:0.6rem;border-radius:6px;max-height:280px;overflow-y:auto">Loading…</div>
+    </div>
+
+    {# v1.18.0: Chat tab — act as any peer, send messages to other peers via HMAC-signed envelope. #}
+    <div class="card tab-chat">
+      <h2>Chat — act as a peer</h2>
+      <p class="hint" style="margin-top:0">Pick a peer to act as, pick a recipient, send a message. Server signs the envelope with the from-peer's pair-secret and POSTs to the relay. <strong>Expect reply</strong> blocks up to 90s for a sync ask; otherwise fire-and-forget.</p>
+
+      <div class="grid grid-2" style="gap:0.75rem;margin-bottom:0.75rem">
+        <div class="field" style="margin:0">
+          <label>From (act as)</label>
+          <select id="chat-from">
+            {% for peer_id, peer in setup.peers.items() %}
+            <option value="{{ peer_id }}">{{ peer_id }} — {{ peer.display_name|e }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>To (recipient)</label>
+          <select id="chat-to">
+            {% for peer_id, peer in setup.peers.items() %}
+            <option value="{{ peer_id }}">{{ peer_id }} — {{ peer.display_name|e }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Content</label>
+        <textarea id="chat-content" rows="3" placeholder="Type your message…"></textarea>
+      </div>
+
+      <div class="grid grid-2" style="gap:0.75rem;margin:0.5rem 0">
+        <div class="checkbox-row" style="margin:0">
+          <input type="checkbox" id="chat-expect-reply">
+          <label for="chat-expect-reply" style="margin:0;font-weight:normal">Expect reply (sync ask, blocks up to <span id="chat-timeout-display">90</span>s)</label>
+        </div>
+        <div class="field" style="margin:0">
+          <label style="font-size:0.85rem">Thread ID <span class="hint">(optional — paste to continue a thread)</span></label>
+          <input type="text" id="chat-thread-id" placeholder="leave empty for new conversation">
+        </div>
+      </div>
+
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem">
+        <button class="btn btn-primary" onclick="sendChat()">Send</button>
+        <button class="btn" onclick="document.getElementById('chat-content').value = ''">Clear</button>
+        <span id="chat-status" style="margin-left:auto;font-size:0.85rem;color:var(--text-dim)"></span>
+      </div>
+
+      <h3 style="font-size:0.95rem;margin:1.25rem 0 0.4rem">Recent activity (this browser session)</h3>
+      <div id="chat-history" style="max-height:400px;overflow-y:auto;font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;background:var(--code-bg);padding:0.6rem;border-radius:6px">
+        <div style="color:var(--text-dim)">No messages sent yet.</div>
+      </div>
+    </div>
+
+    <div class="card tab-overview">
       <h2>Live status <span style="font-size: 0.7em; color: var(--text-dim);">(refresh every 5s)</span></h2>
       <div id="live-status">Loading...</div>
     </div>
@@ -468,6 +626,27 @@
   </div>
 
   <script>
+    // v1.17.1: tab navigation — Overview is the daily-driver "running" view;
+    // Peers / Teams / Install hold the setup-time UI. Persisted to localStorage.
+    function setActiveTab(name) {
+      const valid = new Set(['overview', 'peers', 'teams', 'install', 'chat']);
+      if (!valid.has(name)) name = 'overview';
+      document.body.dataset.activeTab = name;
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === name);
+      });
+      try { localStorage.setItem('clade-active-tab', name); } catch {}
+      if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    }
+    // Init: URL hash wins → localStorage → default 'overview'
+    (function initTab() {
+      const hashTab = (location.hash || '').replace(/^#/, '');
+      let saved = null;
+      try { saved = localStorage.getItem('clade-active-tab'); } catch {}
+      setActiveTab(hashTab || saved || 'overview');
+    })();
+    window.addEventListener('hashchange', () => setActiveTab((location.hash || '').replace(/^#/, '')));
+
     function copyText(btn) {
       const code = btn.parentElement.querySelector('code');
       navigator.clipboard.writeText(code.textContent.trim()).then(() => {
@@ -540,10 +719,208 @@
     pollHandle = setInterval(refreshStatus, 5000);
 
     // ===========================================================================
-    // v1.12.0: peer management (add / edit / remove + teams)
+    // v1.17.0: Cycle activity — scribe state + kill-switch + recent commits
     // ===========================================================================
 
     const PROJECT_TOKEN = '{{ setup.project_token }}';
+
+    function shortSha(s) { return s ? s.slice(0, 7) : '—'; }
+    function esc(s) {
+      return (s || '').toString()
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+    function timeAgo(iso) {
+      try {
+        const t = new Date(iso).getTime();
+        const s = Math.floor((Date.now() - t) / 1000);
+        if (s < 60) return s + 's ago';
+        if (s < 3600) return Math.floor(s/60) + 'm ago';
+        if (s < 86400) return Math.floor(s/3600) + 'h ago';
+        return Math.floor(s/86400) + 'd ago';
+      } catch { return iso; }
+    }
+
+    async function refreshScribeState() {
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/scribe-state`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        document.getElementById('cycle-state-error').style.display = 'none';
+
+        // Toggle global Pause/Resume buttons
+        document.getElementById('global-pause-btn').style.display = data.global_paused ? 'none' : '';
+        document.getElementById('global-resume-btn').style.display = data.global_paused ? '' : 'none';
+
+        const rows = [];
+        const pids = Object.keys(data.peers).sort();
+        if (!pids.length) {
+          rows.push('<tr><td colspan="7" style="padding:0.5rem;color:var(--text-dim)">No peers configured</td></tr>');
+        }
+        for (const pid of pids) {
+          const p = data.peers[pid];
+          const stateLabel = p.paused
+            ? `<span style="color:var(--danger);font-weight:600">PAUSED</span> <span style="color:var(--text-dim);font-size:0.78rem">(${esc(p.paused_scope)})</span>`
+            : (p.scribe_enabled ? `<span style="color:var(--success)">active</span>` : `<span style="color:var(--text-dim)">off</span>`);
+          const action = p.paused
+            ? `<button class="btn btn-sm" onclick="killSwitch('${esc(pid)}', false)">Resume</button>`
+            : `<button class="btn btn-danger btn-sm" onclick="killSwitch('${esc(pid)}', true)">Pause</button>`;
+          rows.push(
+            `<tr style="border-bottom:1px solid var(--border)">` +
+            `<td style="padding:0.4rem 0.6rem;font-weight:600">${esc(pid)}</td>` +
+            `<td style="padding:0.4rem 0.6rem">${p.scribe_enabled ? '✓' : '—'}</td>` +
+            `<td style="padding:0.4rem 0.6rem">${p.interval_minutes ?? '—'}min</td>` +
+            `<td style="padding:0.4rem 0.6rem;font-family:ui-monospace,Consolas,monospace">${esc(shortSha(p.last_head_sha))}</td>` +
+            `<td style="padding:0.4rem 0.6rem">${p.rounds_today} / ${p.max_rounds_per_day ?? '—'}</td>` +
+            `<td style="padding:0.4rem 0.6rem">${stateLabel}</td>` +
+            `<td style="padding:0.4rem 0.6rem">${action}</td>` +
+            `</tr>`
+          );
+        }
+        document.getElementById('scribe-tbody').innerHTML = rows.join('');
+      } catch (e) {
+        document.getElementById('cycle-state-error').style.display = 'block';
+        document.getElementById('cycle-state-error').textContent = 'scribe-state error: ' + e.message;
+      }
+    }
+
+    async function refreshRepoLog() {
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/repo-log?limit=20`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const box = document.getElementById('repo-log');
+        if (data.error) {
+          box.innerHTML = `<span style="color:var(--text-dim)">${esc(data.error)}</span>`;
+          return;
+        }
+        if (!data.commits.length) {
+          box.innerHTML = `<span style="color:var(--text-dim)">no commits in ${esc(data.repo_path || '?')}</span>`;
+          return;
+        }
+        const lines = [`<div style="color:var(--text-dim);margin-bottom:0.4rem">${esc(data.repo_path)}</div>`];
+        for (const c of data.commits) {
+          lines.push(
+            `<div style="margin:0.15rem 0">` +
+            `<span style="color:var(--accent)">${esc(c.short)}</span> ` +
+            `<span style="color:var(--text-dim)">${esc(timeAgo(c.iso))}</span> ` +
+            `<span style="color:var(--text-dim)">${esc(c.author)}:</span> ` +
+            `${esc(c.subject)}` +
+            `</div>`
+          );
+        }
+        box.innerHTML = lines.join('');
+      } catch (e) {
+        document.getElementById('repo-log').textContent = 'repo-log error: ' + e.message;
+      }
+    }
+
+    async function killSwitch(peerId, paused) {
+      const url = paused
+        ? `/api/setup/${PROJECT_TOKEN}/pause`
+        : `/api/setup/${PROJECT_TOKEN}/resume`;
+      try {
+        const r = await fetch(url, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({peer_id: peerId}),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      } catch (e) {
+        alert('Kill-switch error: ' + e.message);
+      }
+      await refreshScribeState();
+    }
+
+    refreshScribeState();
+    refreshRepoLog();
+    setInterval(refreshScribeState, 5000);
+    setInterval(refreshRepoLog, 5000);
+
+    // ===========================================================================
+    // v1.18.0: Chat tab — send messages as any peer via HMAC-signed envelope
+    // ===========================================================================
+
+    function escHTML(s) {
+      return (s == null ? '' : String(s))
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+
+    function renderChatEntry(entry) {
+      const ts = new Date(entry.ts).toLocaleTimeString();
+      const head = `<div style="margin:0.5rem 0;border-left:3px solid ${entry.color};padding:0.3rem 0.6rem;background:var(--surface);border-radius:0 4px 4px 0">`;
+      let body = `<div style="color:var(--text-dim);font-size:0.78rem">${escHTML(ts)} • ${escHTML(entry.from)} → ${escHTML(entry.to)} • ${entry.expect_reply ? 'ask' : 'send'}${entry.thread_id ? ' • thread:' + escHTML(entry.thread_id.slice(0,8)) : ''}</div>`;
+      body += `<div style="margin:0.2rem 0">${escHTML(entry.content)}</div>`;
+      if (entry.error) {
+        body += `<div style="color:var(--danger);margin-top:0.2rem"><strong>error:</strong> ${escHTML(entry.error)}</div>`;
+      } else if (entry.response) {
+        const respText = typeof entry.response === 'string' ? entry.response : JSON.stringify(entry.response, null, 2);
+        body += `<div style="color:var(--success);margin-top:0.2rem"><strong>reply:</strong> <pre style="white-space:pre-wrap;margin:0.2rem 0">${escHTML(respText)}</pre></div>`;
+        if (entry.correlation_id) {
+          body += `<div style="font-size:0.78rem;color:var(--text-dim)">msg_id:${escHTML(entry.msg_id.slice(0,8))} • correlation:${escHTML(entry.correlation_id.slice(0,8))}</div>`;
+        }
+      } else {
+        body += `<div style="color:var(--text-dim);font-size:0.78rem">sent (fire-and-forget) • msg_id:${escHTML(entry.msg_id.slice(0,8))}</div>`;
+      }
+      return head + body + '</div>';
+    }
+
+    const _chatHistory = [];
+    function pushChatHistory(entry) {
+      _chatHistory.unshift(entry);
+      if (_chatHistory.length > 50) _chatHistory.length = 50;
+      const box = document.getElementById('chat-history');
+      box.innerHTML = _chatHistory.map(renderChatEntry).join('') ||
+        '<div style="color:var(--text-dim)">No messages sent yet.</div>';
+    }
+
+    async function sendChat() {
+      const from_peer = document.getElementById('chat-from').value;
+      const to_peer = document.getElementById('chat-to').value;
+      const content = document.getElementById('chat-content').value;
+      const expect_reply = document.getElementById('chat-expect-reply').checked;
+      const thread_id = document.getElementById('chat-thread-id').value.trim() || null;
+      const statusEl = document.getElementById('chat-status');
+
+      if (!content.trim()) { statusEl.textContent = '✗ content required'; statusEl.style.color = 'var(--danger)'; return; }
+      if (from_peer === to_peer) { statusEl.textContent = '✗ from and to must differ'; statusEl.style.color = 'var(--danger)'; return; }
+
+      const baseEntry = {
+        ts: Date.now(), from: from_peer, to: to_peer, content, expect_reply, thread_id,
+        color: expect_reply ? '#2563eb' : '#059669',
+      };
+      statusEl.style.color = 'var(--text-dim)';
+      statusEl.textContent = expect_reply ? '⏳ waiting for reply (up to 90s)…' : '⏳ sending…';
+
+      try {
+        const r = await fetch(`/api/setup/${PROJECT_TOKEN}/chat/send`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({from_peer, to_peer, content, expect_reply,
+                                timeout_s: 90, thread_id}),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        if (data.error) throw new Error(data.error);
+        pushChatHistory({...baseEntry, msg_id: data.msg_id, correlation_id: data.correlation_id,
+                         response: data.response});
+        // If server returned a thread_id we generated, surface it so user can continue
+        if (data.thread_id && !thread_id) {
+          document.getElementById('chat-thread-id').value = data.thread_id;
+          document.getElementById('chat-thread-id').placeholder = 'continuing this thread…';
+        }
+        statusEl.textContent = expect_reply ? '✓ reply received' : '✓ sent';
+        statusEl.style.color = 'var(--success)';
+      } catch (e) {
+        pushChatHistory({...baseEntry, msg_id: '????????', error: e.message});
+        statusEl.textContent = '✗ ' + e.message;
+        statusEl.style.color = 'var(--danger)';
+      }
+    }
+
+    // ===========================================================================
+    // v1.12.0: peer management (add / edit / remove + teams)
+    // ===========================================================================
 
     function togglePeerEdit(peerId) {
       const form = document.getElementById('edit-' + peerId);
@@ -560,6 +937,24 @@
         extra_add_dirs: form.querySelector('[name=extra_add_dirs]').value
                           .split('\n').map(s => s.trim()).filter(Boolean),
       };
+      // v1.17.0: scribe block (enabled toggles whole block; empty round_prompt → omit)
+      const scEnabled = form.querySelector('[name=scribe_enabled]');
+      if (scEnabled) {
+        if (scEnabled.checked) {
+          const scribe = {
+            enabled: true,
+            interval_minutes: parseInt(form.querySelector('[name=scribe_interval_minutes]').value) || 60,
+            max_rounds_per_day: parseInt(form.querySelector('[name=scribe_max_rounds_per_day]').value) || 24,
+          };
+          const dp = form.querySelector('[name=scribe_docs_repo_path]').value.trim();
+          if (dp) scribe.docs_repo_path = dp;
+          const rp = form.querySelector('[name=scribe_round_prompt]').value.trim();
+          if (rp) scribe.round_prompt = rp;
+          body.scribe = scribe;
+        } else {
+          body.scribe = {};  // empty dict → backend removes the scribe block
+        }
+      }
       try {
         const r = await fetch(`/api/setup/${PROJECT_TOKEN}/peers/${peerId}`, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},

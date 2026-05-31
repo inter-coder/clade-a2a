@@ -448,11 +448,16 @@ Read by the web UI; also callable directly for scripting.
 | GET | `/api/setup/{token}/teams` | Read current teams structure **(v1.12.0)** |
 | PUT | `/api/setup/{token}/teams` | Replace teams structure **(v1.12.0)** |
 | POST | `/api/setup/import-aitf` | Import an [AI Team Framework](https://github.com/dusankrstic-cpu/ai-team-framework) project as a Clade setup **(v1.13.0)** |
+| POST | `/api/setup/{token}/pause` | Pause a peer's scribe loop (body `{peer_id?}`, empty = global) **(v1.17.0)** |
+| POST | `/api/setup/{token}/resume` | Remove pause sentinel **(v1.17.0)** |
+| GET | `/api/setup/{token}/scribe-state` | Per-peer scribe state (last_head_sha, rounds_today, paused?) **(v1.17.0)** |
+| GET | `/api/setup/{token}/repo-log?limit=N` | Recent commits to docs_repo **(v1.17.0)** |
+| POST | `/api/setup/{token}/chat/send` | Send a clade_message as `from_peer` (body `{from_peer, to_peer, content, expect_reply?, thread_id?}`) **(v1.18.0)** |
 | POST | `/admin/reload` | Re-read setups from disk into in-memory state **(v1.11.0)** |
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.16.x). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.18.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 

@@ -313,35 +313,10 @@ def format_thread_for_prompt(history: list[dict[str, Any]], my_id: str) -> str:
 
 
 # ---- HMAC ----
-
-def _canonical_payload(payload: dict) -> str:
-    """Deterministicka JSON serijalizacija za HMAC. Oba peer-a MORAJU koristiti istu."""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def sign(secret_hex: str, msg_id: str, from_a: str, to_a: str, kind: str,
-         payload: dict, nonce: str, ts_ms: int, correlation_id: str | None = None) -> str:
-    secret = bytes.fromhex(secret_hex)
-    parts = [msg_id, from_a, to_a, kind, _canonical_payload(payload), nonce, str(ts_ms)]
-    if correlation_id:
-        parts.append(correlation_id)
-    msg = "|".join(parts).encode("utf-8")
-    return hmac_module.new(secret, msg, hashlib.sha256).hexdigest()
-
-
-def verify(secret_hex: str, env: dict) -> bool:
-    expected = sign(
-        secret_hex,
-        env["msg_id"],
-        env["from_agent"],
-        env["to_agent"],
-        env["kind"],
-        env["payload"],
-        env["nonce"],
-        env["timestamp_ms"],
-        env.get("correlation_id"),
-    )
-    return hmac_module.compare_digest(expected, env["hmac"])
+# v1.18.0: extracted to agent/wire.py so callers without an agent config (e.g.
+# the web setup-server) can import sign/verify without triggering load_config.
+# Re-exported here for backward compat — existing imports keep working.
+from agent.wire import canonical_payload as _canonical_payload, sign, verify  # noqa: E402, F401
 
 
 # ---- Envelope builder ----

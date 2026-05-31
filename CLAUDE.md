@@ -112,6 +112,15 @@ Four components:
    - AITF import (v1.13.0): `POST /api/setup/import-aitf` adopts an
      AI Team Framework project — see `clade_cli/aitf_import.py`
      (`detect_aitf_project`, `parse_aitf_project`).
+   - Web dashboard (v1.17.0): tab navigation (Overview/Peers/Teams/Chat/Install)
+     with persistence + new endpoints `POST/.../pause`, `POST/.../resume`,
+     `GET /scribe-state`, `GET /repo-log` for the Cycle activity panel.
+     `PATCH /peers/{id}` now accepts a `scribe: dict` field.
+   - Chat-as-peer (v1.18.0): `POST /api/setup/{token}/chat/send` builds an
+     HMAC-signed envelope from any peer's yaml and POSTs to relay `/send` or
+     `/ask`. Implementation in `clade_cli/web_sender.py`; pure HMAC funcs
+     extracted to `agent/wire.py` so non-agent code can sign without
+     triggering `agent.main`'s config load.
    - Actual peer ops in `clade_cli/peer_ops.py` (`add_peer_op`,
      `update_peer_op`, `remove_peer_op`, `update_teams_op`); CLI
      (`clade-add-peer`) is a thin wrapper around the same module.
