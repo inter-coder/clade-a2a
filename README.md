@@ -126,6 +126,8 @@ Each peer's role prompt is the **verbatim content** of the matching AITF templat
 
 If nothing in the new commits is relevant to a role's responsibilities, that role's prompt instructs it to do nothing this round (silence is the right answer). Effectively replaces AITF's human-as-dispatcher (`./start_role.sh <role>`) and `scripts/orchestrator.sh` with self-driving daemons. The human still owns scope — set strategic direction by writing to PD's `clade_inbox` or by hand-editing `docs/TEAM/DIRECTIVES/`.
 
+**Live demo of the cycle:** `examples/aitf-demo/run-live-cycle.sh` runs a single full PD → DD → Team → DD → PD → DOC cycle with real `claude --print` spawns on a synthetic AITF project (~$3-5 in tokens, ~10 min wall time). Validated 2026-05-31 — from one human seed commit, the 4 roles autonomously delivered a working Typer CLI scaffold + REPORT + accepted verdict + status update. See `examples/aitf-demo/README.md`.
+
 ### Managing the company later
 
 Open the result page (`http://<host>:8000/setup/<project_token>`) — it's a
