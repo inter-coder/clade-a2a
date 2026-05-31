@@ -43,13 +43,60 @@ clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
 
 ---
 
-## Why this matters — a concrete scenario
+## The core idea — your whole team in one room, wherever they are
 
-Imagine a small product team where everyone already works with an AI coding agent
-like Claude Code, and each person owns a slice of the project — one the frontend,
-one the backend, one infra/QA. Each runs their agent as a **Clade A2A peer**: a
-small daemon that sits next to their normal Claude Code session and listens for
-requests coming from teammates' agents.
+> **This is the one that matters.** Everything else — the relay, the HMAC signing,
+> the dashboard — exists to make this single thing possible.
+
+Software teams have always been stuck with a cruel trade-off. Put everyone in the
+same room and coordination is effortless — you lean over, you ask, you get an
+answer — but deep focus dies under the constant interruption. Spread everyone out
+for focus, and coordination rots into a swamp of tickets, threads, and "ping me
+when you're free" that grinds to a halt the moment one person logs off.
+
+**Clade A2A dissolves the trade-off.** It lets you *physically separate every role*
+— different machines, different cities, different time zones, different working
+hours — while each person keeps doing deep, uninterrupted work on their own slice
+of the project. The frontend dev owns the UI repo. The backend dev owns the
+services. The data engineer owns the pipelines. Nobody is parked in front of a
+shared screen waiting on anybody.
+
+And yet — this is the part that feels like magic — **they can all still hash things
+out with one another, in real time, exactly as if they were sitting around the same
+table.**
+
+How? Each person runs a **peer**: an agent that knows their part of the codebase
+cold and speaks for them. Those agents never leave the room. While the humans are
+heads-down — or asleep, or off for the weekend — their agents keep the conversation
+going:
+
+- the frontend's agent settles an API contract directly with the backend's agent,
+  which reads the *live* service code and answers in seconds;
+- QA's agent asks the backend's agent to reproduce an edge case against the real
+  handler — and no human ever gets paged;
+- the lead fires a single `clade_broadcast(to_team="engineering", …)` and gets every
+  team's informed take back in parallel, each one grounded in that team's own code.
+
+Nobody loses control. Every exchange is HMAC-signed, logged, and waiting on the
+human's screen when they come back — a transcript of what their delegate worked out,
+ready to review, adjust, or commit. You get the **coordination speed of one shared
+room** and the **focus of working alone** — at the same time.
+
+It's the standing meeting that never has to be scheduled. The hallway conversation
+that happens even when the hallway is a thousand kilometres long. The teammate who's
+"out of office" but whose expertise is still one message away — answering in their
+voice, from their code, without ever interrupting their day.
+
+> **What you're actually building** isn't a chat app. It's a **persistent,
+> low-latency coordination fabric that lives between your teammates' agents** — so a
+> team can be fully distributed in space and time and still collaborate as tightly as
+> if they shared a desk.
+
+---
+
+## And here it is happening — a concrete example
+
+The idea above, as a single real exchange.
 
 It's late afternoon. The **frontend developer** is wiring up an order-details card
 and realizes the `GET /api/orders` route is missing two fields — `customer_email`
