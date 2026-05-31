@@ -89,6 +89,32 @@ If you just want the standard CEO + frontend + backend + qa template without tou
 
 Equivalent to Path 1 with the template loaded and install-all run automatically. Skips the browser step.
 
+### Path 3 — import an AI Team Framework project (v1.13.0)
+
+If you already have a project scaffolded by the [AI Team Framework wizard](https://github.com/dusankrstic-cpu/ai-team-framework) (`.ai-team-config.yml` + `docs/TEAM/*.md` in the project root), Clade can adopt it in one shot:
+
+1. From the setup-server form, use the green **Import AI Team Framework project** card — paste the absolute project path and click Import.
+2. Or hit the REST endpoint directly:
+
+   ```bash
+   curl -X POST http://<host>:8000/api/setup/import-aitf \
+     -H 'Content-Type: application/json' \
+     -d '{"project_path": "/absolute/path/to/your-aitf-project", "relay_url_host": "<lan-ip>"}'
+   ```
+
+What you get:
+
+| AITF role | → Clade peer | Team membership |
+|---|---|---|
+| Project Director | `pd` | `aitf_team` |
+| Development Director | `dd` | `aitf_team`, `engineering` |
+| Development Team | `team` | `aitf_team`, `engineering` |
+| Documentation Optimizer | `doc` *(only if `doc_optimizer_enabled: true`)* | `aitf_team` |
+
+Each peer's role prompt is the **verbatim content** of the matching AITF template (`docs/TEAM/PROJECT_DIRECTOR.md`, etc.). Each peer's `extra_add_dirs` includes the absolute project path, so the daemon-spawned Claude can read AND write the AITF document substrate (`DIRECTIVES/`, `REPORTS/`, `TODO.md`, `DECISIONS.md`, `ARCHIVE/`).
+
+This is Phase A of AITF integration: AITF stays the source of truth for role definitions and the document workflow; Clade A2A adds live multi-session execution, presence, secure peer-to-peer messaging, and async task delegation on top. Phases B (scribe daemon side-loop for the DO role) and C (replace `orchestrator.sh` with self-driving daemons) are tracked separately.
+
 ### Managing the company later
 
 Open the result page (`http://<host>:8000/setup/<project_token>`) — it's a
@@ -406,11 +432,12 @@ Read by the web UI; also callable directly for scripting.
 | DELETE | `/api/setup/{token}/peers/{peer_id}` | Remove peer (scrubs + kills daemon) **(v1.12.0)** |
 | GET | `/api/setup/{token}/teams` | Read current teams structure **(v1.12.0)** |
 | PUT | `/api/setup/{token}/teams` | Replace teams structure **(v1.12.0)** |
+| POST | `/api/setup/import-aitf` | Import an [AI Team Framework](https://github.com/dusankrstic-cpu/ai-team-framework) project as a Clade setup **(v1.13.0)** |
 | POST | `/admin/reload` | Re-read setups from disk into in-memory state **(v1.11.0)** |
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.12.x). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.13.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 

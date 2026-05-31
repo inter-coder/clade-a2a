@@ -98,6 +98,9 @@ Four components:
    - Bulk install: `/setup/{token}/install-all` (returns bash script)
    - Mgmt: `POST/PATCH/DELETE /api/setup/{token}/peers[/{peer_id}]`,
      `GET/PUT /api/setup/{token}/teams`, `POST /admin/reload`
+   - AITF import (v1.13.0): `POST /api/setup/import-aitf` adopts an
+     AI Team Framework project — see `clade_cli/aitf_import.py`
+     (`detect_aitf_project`, `parse_aitf_project`).
    - Actual peer ops in `clade_cli/peer_ops.py` (`add_peer_op`,
      `update_peer_op`, `remove_peer_op`, `update_teams_op`); CLI
      (`clade-add-peer`) is a thin wrapper around the same module.

@@ -87,6 +87,16 @@ class UpdateTeamsRequest(BaseModel):
     teams: dict[str, list[str]]
 
 
+# v1.13.0 (Phase A — AITF import): body for POST /api/setup/import-aitf
+class AitfImportRequest(BaseModel):
+    project_path: str = Field(..., description="Absolute path to an AITF-scaffolded project root")
+    relay_host: str = Field("0.0.0.0", description="Bind host for relay")
+    relay_url_host: str = Field("", description="Public hostname/IP for peers. If empty, auto-detected LAN IP.")
+    relay_port: int = Field(7777, ge=1024, le=65535)
+    start_relay: bool = Field(True)
+    project_name_override: str = Field("", description="If empty, uses name from .ai-team-config.yml")
+
+
 class SetupForm(BaseModel):
     """Top-level form submission."""
     project_name: str = Field(..., min_length=1, max_length=64)
@@ -457,6 +467,58 @@ def create_app(state: AppState) -> FastAPI:
         # v1.4.2: persistuj da restart setup-server-a ne invalidira peer install-e
         _save_setup(setup, state.data_dir)
         return RedirectResponse(f"/setup/{setup.project_token}", status_code=303)
+
+    # v1.13.0 (Phase A): import an existing AI Team Framework project.
+    # Maps PD/DD/Team/(DO) roles from .ai-team-config.yml + docs/TEAM/*.md to
+    # Clade A2A peers, gives every peer extra_add_dirs=[<project_path>] so the
+    # document substrate stays the source of truth.
+    @app.post("/api/setup/import-aitf")
+    async def import_aitf(body: AitfImportRequest) -> dict:
+        from clade_cli import aitf_import as _aitf  # noqa: PLC0415
+
+        try:
+            parsed = _aitf.parse_aitf_project(Path(body.project_path))
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(400, f"AITF import failed: {e}") from e
+
+        relay_url_host = body.relay_url_host.strip() or _detect_lan_ip()
+        project_name = body.project_name_override.strip() or parsed.project_name
+
+        peer_inputs = [
+            PeerInput(
+                peer_id=p.peer_id,
+                display_name=p.display_name,
+                role=p.role,
+                extra_add_dirs=p.extra_add_dirs,
+            )
+            for p in parsed.peers
+        ]
+
+        form = SetupForm(
+            project_name=project_name[:64],
+            relay_host=body.relay_host,
+            relay_url_host=relay_url_host,
+            relay_port=body.relay_port,
+            start_relay=body.start_relay,
+            peers=peer_inputs,
+            teams=parsed.teams,
+        )
+
+        setup = _generate_setup(form, state.data_dir)
+        state.setups[setup.project_token] = setup
+        if form.start_relay:
+            setup.relay_subprocess = _start_relay_subprocess(setup)
+        _save_setup(setup, state.data_dir)
+
+        return {
+            "ok": True,
+            "project_token": setup.project_token,
+            "redirect_url": f"/setup/{setup.project_token}",
+            "imported_from": str(parsed.project_path),
+            "doc_optimizer_enabled": parsed.doc_optimizer_enabled,
+            "peers": [p.peer_id for p in parsed.peers],
+            "teams": parsed.teams,
+        }
 
     # --- Result page (shows per-peer URLs) ---
 

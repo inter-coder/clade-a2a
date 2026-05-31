@@ -275,6 +275,25 @@
               onclick="loadVirtualCompanyTemplate()">Load virtual-company template</button>
     </div>
 
+    <div class="card" style="background:#f0fbf6;border-left:4px solid #059669">
+      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Import AI Team Framework project</h2>
+      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+        Already have a project scaffolded by the
+        <a href="https://github.com/dusankrstic-cpu/ai-team-framework" target="_blank" rel="noopener" style="color:#047857">AI Team Framework wizard</a>?
+        Point to it and we map PD / DD / Team (+ DO if enabled) to 4 Clade A2A peers, with full file access to <code>docs/TEAM/</code>.
+      </p>
+      <div style="display:flex;gap:0.5rem;align-items:stretch;flex-wrap:wrap">
+        <input type="text" id="aitf_project_path" placeholder="/absolute/path/to/your-project"
+               style="flex:1;min-width:280px;padding:0.55rem 0.7rem;border:1px solid #cbd5d0;border-radius:6px;font-family:inherit;font-size:0.92rem;background:white;color:#1a1a1a">
+        <button type="button"
+                style="background:#059669;color:white;border:none;padding:0.6rem 1.2rem;border-radius:6px;font-family:inherit;font-size:0.92rem;cursor:pointer;font-weight:500"
+                onmouseover="this.style.background='#047857'"
+                onmouseout="this.style.background='#059669'"
+                onclick="importAitfProject()">Import</button>
+      </div>
+      <div id="aitf_error" style="margin-top:0.5rem;color:#dc2626;font-size:0.88rem;display:none"></div>
+    </div>
+
     <form id="setup-form">
       <div class="card">
         <h2>Project</h2>
@@ -462,6 +481,42 @@
 
     // v1.10.0: pre-fill mini dev shop (CEO + 3 employees + engineering team).
     // Everything is editable before Generate Setup.
+    async function importAitfProject() {
+      const path = document.getElementById('aitf_project_path').value.trim();
+      const errBox = document.getElementById('aitf_error');
+      errBox.style.display = 'none';
+      errBox.textContent = '';
+      if (!path) {
+        errBox.textContent = 'Project path is required.';
+        errBox.style.display = 'block';
+        return;
+      }
+      try {
+        const resp = await fetch('/api/setup/import-aitf', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            project_path: path,
+            relay_url_host: document.getElementById('relay_url_host').value || '',
+            relay_port: parseInt(document.getElementById('relay_port').value) || 7777,
+            relay_host: document.getElementById('relay_host').value || '0.0.0.0',
+            start_relay: document.getElementById('start_relay').checked,
+          }),
+        });
+        if (!resp.ok) {
+          const detail = await resp.text();
+          errBox.textContent = `Import failed (${resp.status}): ${detail}`;
+          errBox.style.display = 'block';
+          return;
+        }
+        const data = await resp.json();
+        window.location.href = data.redirect_url;
+      } catch (e) {
+        errBox.textContent = `Network error: ${e.message}`;
+        errBox.style.display = 'block';
+      }
+    }
+
     function loadVirtualCompanyTemplate() {
       if (!confirm('This will REPLACE all current peers and teams. Continue?')) return;
       document.getElementById('project_name').value = 'virtual-company';
