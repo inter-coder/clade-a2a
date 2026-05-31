@@ -56,6 +56,10 @@ class PeerInput(BaseModel):
     role: str = Field("", description="Multi-line role prompt")
     extra_add_dirs: list[str] = Field(default_factory=list,
                                         description="Paths the daemon-spawned Claude can read outside its workdir")
+    # v1.14.0 (Phase B): opt-in scribe daemon side-loop. If set, written under
+    # `scribe:` key in the peer yaml; agent/main.py validates as ScribeConfig.
+    # Currently auto-populated for the AITF 'doc' peer by aitf_import.
+    scribe: dict | None = Field(default=None, description="Scribe loop config")
 
     @field_validator("peer_id")
     @classmethod
@@ -204,6 +208,10 @@ def _build_yaml(peer: PeerInput, all_peers: list[PeerInput],
         # or directly in this yaml; the daemon reads it at startup.
         "extra_add_dirs": list(peer.extra_add_dirs or []),
     })
+    # v1.14.0 (Phase B): persist scribe config if set on the peer (currently
+    # only the AITF 'doc' peer auto-gets it; everyone else hand-edits).
+    if peer.scribe:
+        data["scribe"] = dict(peer.scribe)
     # v1.9.0: teams su shared kod sve peer-ove — CEO i zaposleni svi imaju isti
     # list "engineering = [alice, bob]" pa svako moze da broadcast-uje grupi.
     # Filtriramo praznihm/invalid (zaposleni koji ne postoje).
@@ -490,6 +498,7 @@ def create_app(state: AppState) -> FastAPI:
                 display_name=p.display_name,
                 role=p.role,
                 extra_add_dirs=p.extra_add_dirs,
+                scribe=p.scribe,
             )
             for p in parsed.peers
         ]

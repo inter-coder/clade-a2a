@@ -865,6 +865,213 @@ async def config_watcher_loop(cfg, config_path: Path) -> None:
             log(f"{RED}config watcher error: {type(e).__name__}: {e}{RESET}", "")
 
 
+# ============================================================================
+# v1.14.0 (Phase B) — scribe_loop: opt-in self-driving documentation rounds.
+# Wakes every cfg.scribe.interval_minutes, compares git HEAD of the docs repo
+# against persisted state. If unchanged → returns immediately (zero token spend).
+# If changed → spawns `claude --print` with a scribe-round prompt; Claude reads
+# new commits and decides what to do (update summaries, nudge quiet peers,
+# request CEO/PD review) via MCP tools.
+# ============================================================================
+
+def _scribe_state_path(cfg) -> Path:
+    """Per-peer state file. Lives next to the audit DB so cleanup tools find it."""
+    return Path(cfg.audit_db).expanduser().parent / f"{cfg.my_id}-scribe-state.json"
+
+
+def _scribe_load_state(cfg) -> dict[str, Any]:
+    import json as _json  # noqa: PLC0415
+    p = _scribe_state_path(cfg)
+    if not p.exists():
+        return {"last_head_sha": None, "rounds_today": []}
+    try:
+        return _json.loads(p.read_text())
+    except Exception as e:
+        log(f"{YELLOW}scribe: state file corrupt ({e}); starting fresh{RESET}", "")
+        return {"last_head_sha": None, "rounds_today": []}
+
+
+def _scribe_save_state(cfg, state: dict[str, Any]) -> None:
+    import json as _json  # noqa: PLC0415
+    p = _scribe_state_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(_json.dumps(state, indent=2))
+    tmp.replace(p)
+
+
+def _scribe_resolve_repo(cfg) -> Path | None:
+    """docs_repo_path from scribe config wins; otherwise first extra_add_dirs entry."""
+    candidate = None
+    if cfg.scribe and cfg.scribe.docs_repo_path:
+        candidate = cfg.scribe.docs_repo_path
+    elif getattr(cfg, "extra_add_dirs", None):
+        candidate = cfg.extra_add_dirs[0] if cfg.extra_add_dirs else None
+    if not candidate:
+        return None
+    p = Path(candidate).expanduser()
+    if not p.exists() or not p.is_dir():
+        return None
+    return p.resolve()
+
+
+async def _scribe_git_head(repo: Path) -> str | None:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(repo), "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    return out.decode().strip() or None
+
+
+async def _scribe_git_log_since(repo: Path, base_sha: str | None, limit: int = 50) -> str:
+    """Short summary of commits in <base_sha>..HEAD. If base_sha is None,
+    last `limit` commits. Truncated to keep prompts bounded."""
+    rng = f"{base_sha}..HEAD" if base_sha else f"-{limit}"
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(repo), "log", "--pretty=format:%h %ai %an: %s", rng,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return "(git log failed)"
+    text = out.decode("utf-8", errors="replace").strip()
+    if not text:
+        return "(no new commits)"
+    lines = text.split("\n")[:limit]
+    return "\n".join(lines)
+
+
+def _scribe_prune_today(state: dict[str, Any]) -> None:
+    """Drop round timestamps older than 24h so the day-cap rolls forward."""
+    cutoff = time.time() - 24 * 3600
+    state["rounds_today"] = [ts for ts in state.get("rounds_today", []) if ts > cutoff]
+
+
+async def _call_claude_scribe(prompt: str, workdir: Path, cfg, dangerous: bool) -> str:
+    """Leaner spawn than call_claude — no peer-to-peer scaffolding. Scribe operates
+    on the repo + MCP tools, not on an incoming peer question."""
+    role_block = ""
+    if cfg.role and cfg.role.strip():
+        role_block = f"=== YOUR ROLE ===\n{cfg.role.strip()}\n=== END ===\n\n"
+
+    system_prompt = (
+        f"{role_block}"
+        f"You are the scribe peer '{cfg.my_id}' on the Clade A2A network.\n"
+        f"You run periodic documentation rounds on a shared git repo. Other peers reach\n"
+        f"you with clade_message; you reach them the same way.\n\n"
+        f"Round discipline: be terse. Commit changes with a short message. Send at most\n"
+        f"one nudge per peer per round. Do NOT speculate about peers you haven't observed."
+    )
+    mcp_config = workdir / ".mcp.json"
+    args = ["claude", "--print", "--append-system-prompt", system_prompt]
+    if mcp_config.exists():
+        args.extend(["--mcp-config", str(mcp_config)])
+    for d in _extra_add_dirs(cfg, workdir):
+        args.extend(["--add-dir", d])
+    if dangerous:
+        args.append("--dangerously-skip-permissions")
+    args.extend(["--", prompt])
+
+    env = {**os.environ, **MINIMAL_HEADLESS_ENV}
+    proc = await asyncio.create_subprocess_exec(
+        *args, cwd=str(workdir),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+        return f"[scribe: claude --print timeout after {CLAUDE_TIMEOUT_S}s]"
+    if proc.returncode != 0:
+        return f"[scribe: claude exited {proc.returncode}: {err.decode(errors='replace')[:200].strip()}]"
+    return out.decode("utf-8", errors="replace").strip() or "[scribe: empty]"
+
+
+async def _scribe_tick(cfg, workdir: Path, dangerous: bool, state: dict[str, Any]) -> bool:
+    """One round. Returns True if claude was spawned, False if cheap exit."""
+    repo = _scribe_resolve_repo(cfg)
+    if repo is None:
+        log(f"{YELLOW}scribe: no valid docs_repo_path / extra_add_dirs[0]; skipping{RESET}", "")
+        return False
+
+    head = await _scribe_git_head(repo)
+    if head is None:
+        log(f"{YELLOW}scribe: {repo} is not a git repo; skipping{RESET}", "")
+        return False
+
+    last_sha = state.get("last_head_sha")
+    if head == last_sha:
+        return False  # nothing new — zero token spend
+
+    _scribe_prune_today(state)
+    cap = cfg.scribe.max_rounds_per_day if cfg.scribe else 24
+    if len(state["rounds_today"]) >= cap:
+        log(f"{YELLOW}scribe: day cap reached ({cap}); skipping until midnight roll-off{RESET}", "")
+        return False
+
+    commits = await _scribe_git_log_since(repo, last_sha, limit=50)
+    log(f"{CYAN}↻ scribe round: {repo.name} {last_sha[:7] if last_sha else '(first)'} → {head[:7]}{RESET}", "")
+
+    peer_list = ", ".join(sorted(cfg.peers.keys())) or "(no peers configured)"
+    prompt = (
+        f"Time to do a scribe round on {repo}.\n\n"
+        f"=== NEW COMMITS SINCE LAST ROUND ({last_sha[:12] if last_sha else 'first round'} -> {head[:12]}) ===\n"
+        f"{commits}\n"
+        f"=== END ===\n\n"
+        f"Peers you can reach via clade_message: {peer_list}\n\n"
+        f"Your job this round:\n"
+        f"1. Skim the changed files (focus on docs/TEAM/ if the substrate is an AITF project).\n"
+        f"2. If a project-level summary (e.g. PROJECT_STATUS.md, OPTIMIZATION_LOG.md) is\n"
+        f"   stale relative to the new commits, update it and `git commit` the change.\n"
+        f"3. For any peer whose owned area looks neglected, send ONE short nudge via\n"
+        f"   clade_message(to=<peer>, content='reminder: ...'). One per peer per round.\n"
+        f"4. If enough has changed since the last review, ask the project director\n"
+        f"   peer (typically 'pd' in AITF setups) for review via clade_message.\n\n"
+        f"Be terse. Do not invent activity that isn't in the commits above."
+    )
+
+    answer = await _call_claude_scribe(prompt, workdir, cfg, dangerous)
+    log(f"{DIM}scribe round done: {answer[:160]}{RESET}", "")
+
+    state["last_head_sha"] = head
+    state["rounds_today"].append(time.time())
+    _scribe_save_state(cfg, state)
+    return True
+
+
+async def scribe_loop(cfg, workdir: Path, dangerous: bool) -> None:
+    """v1.14.0: periodic self-driving documentation rounds. Opt-in via cfg.scribe.
+
+    Sleeps interval_minutes between ticks. Each tick exits cheaply if the docs
+    repo HEAD hasn't moved since last round — guarantees no token spend on
+    idle days. Hard cap of max_rounds_per_day prevents runaway loops."""
+    if cfg.scribe is None or not cfg.scribe.enabled:
+        return
+
+    interval_s = cfg.scribe.interval_minutes * 60
+    log(f"{CYAN}scribe_loop: enabled, interval={cfg.scribe.interval_minutes}min, "
+        f"cap={cfg.scribe.max_rounds_per_day}/day{RESET}", "")
+
+    state = _scribe_load_state(cfg)
+    while not SHUTDOWN_EVENT.is_set():
+        try:
+            await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=interval_s)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await _scribe_tick(cfg, workdir, dangerous, state)
+        except Exception as e:
+            log(f"{RED}scribe tick failed: {type(e).__name__}: {e}{RESET}", "")
+
+
 async def _process_with_limit(env: dict, dangerous: bool, workdir: Path, cfg,
                                 sign_fn, audit_log_fn, **kwargs) -> None:
     """v1.4.8: Wrapper koji uzima semafor pre nego spawn-uje claude --print.
@@ -1058,6 +1265,9 @@ def main() -> None:
         watcher = asyncio.create_task(config_watcher_loop(cfg, config_path))
         # v1.8.0: presence heartbeat — relay zna ko je online u svakom momentu
         presence = asyncio.create_task(presence_loop(cfg))
+        # v1.14.0 (Phase B): opt-in self-driving scribe rounds. No-op unless
+        # cfg.scribe.enabled — see ScribeConfig in agent/main.py.
+        scribe = asyncio.create_task(scribe_loop(cfg, workdir, args.dangerous))
         try:
             await poll  # poll_loop drzi semantiku zivota; ostali rade u pozadini
         finally:
@@ -1077,7 +1287,8 @@ def main() -> None:
             monitor.cancel()
             watcher.cancel()
             presence.cancel()
-            for t in (monitor, watcher, presence):
+            scribe.cancel()
+            for t in (monitor, watcher, presence, scribe):
                 try:
                     await t
                 except asyncio.CancelledError:

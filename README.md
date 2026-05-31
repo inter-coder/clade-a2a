@@ -113,7 +113,9 @@ What you get:
 
 Each peer's role prompt is the **verbatim content** of the matching AITF template (`docs/TEAM/PROJECT_DIRECTOR.md`, etc.). Each peer's `extra_add_dirs` includes the absolute project path, so the daemon-spawned Claude can read AND write the AITF document substrate (`DIRECTIVES/`, `REPORTS/`, `TODO.md`, `DECISIONS.md`, `ARCHIVE/`).
 
-This is Phase A of AITF integration: AITF stays the source of truth for role definitions and the document workflow; Clade A2A adds live multi-session execution, presence, secure peer-to-peer messaging, and async task delegation on top. Phases B (scribe daemon side-loop for the DO role) and C (replace `orchestrator.sh` with self-driving daemons) are tracked separately.
+**Phase B (v1.14.0) — self-driving scribe:** the `doc` peer is auto-configured with a `scribe:` block (`enabled: true`, `interval_minutes: 60`, `max_rounds_per_day: 24`, watches the imported project root). Its daemon runs a fifth side-loop that wakes every hour, compares `git rev-parse HEAD` of the repo against persisted state, and **only spawns Claude when there are new commits**. Idle days cost zero tokens. On a round, Claude reads `git log <last>..HEAD`, updates summary documents, nudges quiet peers via `clade_message`, and asks the project director for review when warranted. This replaces AITF's on-demand `./start_role.sh doc` workflow with a self-driving loop. Other peers can opt into the same loop by hand-editing their yaml's `scribe:` block — see `ScribeConfig` in `agent/main.py`.
+
+Phase C (replace `orchestrator.sh` with self-driving daemons for PD / DD / Team) is tracked separately.
 
 ### Managing the company later
 
@@ -437,7 +439,7 @@ Read by the web UI; also callable directly for scripting.
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.13.x). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.14.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 

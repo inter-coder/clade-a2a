@@ -118,6 +118,15 @@ def test_parse_with_do(tmp_path: Path):
     # teams: aitf_team has all, engineering has dd+team
     assert set(out.teams["aitf_team"]) == {"pd", "dd", "team", "doc"}
     assert set(out.teams["engineering"]) == {"dd", "team"}
+    # v1.14.0 (Phase B): doc peer gets scribe config; others don't
+    doc = next(p for p in out.peers if p.peer_id == "doc")
+    assert doc.scribe is not None
+    assert doc.scribe["enabled"] is True
+    assert doc.scribe["interval_minutes"] == 60
+    assert doc.scribe["max_rounds_per_day"] == 24
+    assert doc.scribe["docs_repo_path"] == str(project.resolve())
+    for non_doc in (p for p in out.peers if p.peer_id != "doc"):
+        assert non_doc.scribe is None
 
 
 def test_parse_without_do(tmp_path: Path):
@@ -188,6 +197,12 @@ def test_endpoint_imports_aitf_project(tmp_path: Path):
     # teams stored in yaml
     assert set(pd_yaml["teams"]["aitf_team"]) == {"pd", "dd", "team", "doc"}
     assert set(pd_yaml["teams"]["engineering"]) == {"dd", "team"}
+    # v1.14.0 (Phase B): scribe block only on doc peer yaml
+    assert "scribe" not in pd_yaml
+    doc_yaml = yaml.safe_load((state.data_dir / project_token / "doc.yaml").read_text())
+    assert doc_yaml["scribe"]["enabled"] is True
+    assert doc_yaml["scribe"]["interval_minutes"] == 60
+    assert doc_yaml["scribe"]["docs_repo_path"] == abs_project
 
 
 def test_endpoint_returns_400_on_invalid_path(tmp_path: Path):

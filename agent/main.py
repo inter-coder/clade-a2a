@@ -50,6 +50,21 @@ class PeerInfo(BaseModel):
     role: str | None = None  # role summary (kratak opis za interactive Claude)
 
 
+class ScribeConfig(BaseModel):
+    """v1.14.0 (Phase B) — opt-in self-driving documentation loop.
+
+    Set on the DO peer (or any peer that should periodically reflect on a shared
+    git substrate). Loop in daemon.py ticks every `interval_minutes`, compares
+    git HEAD of `docs_repo_path` against persisted state, and ONLY spawns
+    `claude --print` when there are new commits. This guarantees zero token
+    spend on idle days.
+    """
+    enabled: bool = True
+    interval_minutes: int = Field(60, ge=5, le=1440)
+    docs_repo_path: str | None = None  # absolute git repo to watch; defaults to extra_add_dirs[0]
+    max_rounds_per_day: int = Field(24, ge=1, le=288)
+
+
 class Config(BaseModel):
     """Per-agent config (v1.3.0+ ima name + role + per-peer info).
 
@@ -73,6 +88,9 @@ class Config(BaseModel):
     # konkretnim project dir-ovima (npr. /home/dusan/projects/foo, /var/www).
     # Path-ovi su validirani u daemon-u (postojanje); nepostojeci su skip-ovani.
     extra_add_dirs: list[str] = Field(default_factory=list)
+    # v1.14.0 (Phase B): opt-in scribe side-loop, see ScribeConfig docstring.
+    # Set on the DO/documentation peer; None means the loop never starts.
+    scribe: ScribeConfig | None = None
 
     def peer_secret(self, peer_id: str) -> str | None:
         """Backward-compat helper: vraca HMAC secret za peer."""

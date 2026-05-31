@@ -87,7 +87,10 @@ Four components:
    (`<audit_db_dir>/<peer>-daemon.lock`); `clade_inbox` returns busy when
    lock is alive. Side loops: `outbox_monitor_loop`, `presence_loop`
    (heartbeat every 15s), `config_watcher_loop` (5s mtime poll, hot-reloads
-   `cfg.peers` + `cfg.teams`).
+   `cfg.peers` + `cfg.teams`), `scribe_loop` (v1.14.0, opt-in via
+   `cfg.scribe`; periodic self-driving documentation rounds, ticks every
+   `interval_minutes`, cheap early-exit when git HEAD of watched repo hasn't
+   moved — zero token spend on idle days).
 
 4. **`clade_cli/setup_server.py`** — FastAPI web setup wizard + REST
    management. Generates tokens.json + per-peer yamls + `.mcp.json`,

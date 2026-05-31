@@ -47,6 +47,7 @@ class AitfPeerSpec:
     display_name: str
     role: str
     extra_add_dirs: list[str]
+    scribe: dict | None = None  # v1.14.0 (Phase B): only set on 'doc' peer
 
 
 @dataclass
@@ -106,11 +107,23 @@ def parse_aitf_project(project_path: Path) -> AitfImport:
         if not role_text:
             raise ValueError(f"AITF role file is empty: {role_path}")
         display = f"{default_name} — {project_name}" if project_name else default_name
+        # v1.14.0 (Phase B): the DO peer turns AITF's on-demand Documentation
+        # Optimizer into a self-driving scribe. Defaults: hourly tick, hard cap
+        # of 24 rounds/day, watches the AITF project repo.
+        scribe_cfg = None
+        if peer_id == "doc":
+            scribe_cfg = {
+                "enabled": True,
+                "interval_minutes": 60,
+                "max_rounds_per_day": 24,
+                "docs_repo_path": abs_project,
+            }
         peers.append(AitfPeerSpec(
             peer_id=peer_id,
             display_name=display,
             role=role_text,
             extra_add_dirs=[abs_project],
+            scribe=scribe_cfg,
         ))
 
     peer_ids = [p.peer_id for p in peers]
