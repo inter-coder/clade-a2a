@@ -40,7 +40,9 @@ BOLD = "\033[1m"
 
 
 POLL_INTERVAL_S = 2.0
-CLAUDE_TIMEOUT_S = 90
+# v1.18.2: env override. AITF roles read several docs on each spawn, so a
+# simple ask can exceed the old hard-coded 90s. Bump via CLADE_CLAUDE_TIMEOUT_S.
+CLAUDE_TIMEOUT_S = int(os.environ.get("CLADE_CLAUDE_TIMEOUT_S", "90"))
 OUTBOX_CHECK_INTERVAL_S = 30.0
 OUTBOX_STALE_WARN_S = 30.0      # poruka starija od ovog → warn log
 # v1.8.0: heartbeat ka relay-ev /presence endpoint. Default 15s znači peer pada

@@ -4,82 +4,254 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Setup ready — {{ setup.project_name }}</title>
+  <script>
+    // Pre-paint: apply the saved theme before first paint so there is no flash.
+    // data-theme on <html>: "system" follows OS, "light"/"dark" force it.
+    (function () {
+      try {
+        document.documentElement.setAttribute(
+          'data-theme', localStorage.getItem('clade-theme') || 'system');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'system');
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    /* ──────────────────────────────────────────────────────────────
+       Clade A2A console — warm "operator deck" theme.
+       Light is the baseline; data-theme on <html> switches it:
+         system → follow OS · light → force light · dark → force dark.
+       ────────────────────────────────────────────────────────────── */
     :root {
-      --bg: #fafafa;
-      --surface: #ffffff;
-      --border: #e0e0e0;
-      --text: #1a1a1a;
-      --text-dim: #666;
-      --accent: #2563eb;
-      --success: #059669;
-      --warning: #d97706;
-      --code-bg: #f5f5f5;
+      color-scheme: light;
+      --bg:            #F5F1EA;
+      --surface:       #FFFDFB;
+      --surface-2:     #F1EBE2;
+      --border:        #E7DFD3;
+      --border-strong: #D6CBB9;
+      --text:          #211B14;
+      --text-dim:      #8A8073;
+      --accent:        #C0613B;
+      --accent-hover:  #A5492A;
+      --accent-soft:   rgba(192,97,59,0.12);
+      --accent-ring:   rgba(192,97,59,0.40);
+      --on-accent:     #FFF7F2;
+      --success:       #3F7D53;
+      --success-soft:  rgba(63,125,83,0.15);
+      --warning:       #B0712A;
+      --warning-soft:  rgba(176,113,42,0.16);
+      --danger:        #B4453A;
+      --danger-soft:   rgba(180,69,58,0.13);
+      --code-bg:       #F1EBE2;
+      --recv-bubble:   #FFFFFF;
+      --shadow-sm: 0 1px 2px rgba(60,42,28,0.07), 0 1px 1px rgba(60,42,28,0.04);
+      --shadow-md: 0 8px 26px rgba(60,42,28,0.09), 0 2px 6px rgba(60,42,28,0.05);
+      --shadow-lg: 0 24px 60px rgba(60,42,28,0.16);
+      --radius:    18px;
+      --radius-sm: 12px;
+      --radius-xs: 8px;
+      --font-display: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+      --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg:            #141009;
+      --surface:       #1D1810;
+      --surface-2:     #262017;
+      --border:        #332B20;
+      --border-strong: #463B2C;
+      --text:          #F1E9DC;
+      --text-dim:      #A99C88;
+      --accent:        #E2865C;
+      --accent-hover:  #F3A079;
+      --accent-soft:   rgba(226,134,92,0.16);
+      --accent-ring:   rgba(226,134,92,0.45);
+      --on-accent:     #1B1209;
+      --success:       #5FB97E;
+      --success-soft:  rgba(95,185,126,0.16);
+      --warning:       #E0A24B;
+      --warning-soft:  rgba(224,162,75,0.16);
+      --danger:        #E5736A;
+      --danger-soft:   rgba(229,115,106,0.16);
+      --code-bg:       #262017;
+      --recv-bubble:   #262017;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.45);
+      --shadow-md: 0 8px 26px rgba(0,0,0,0.5);
+      --shadow-lg: 0 24px 60px rgba(0,0,0,0.62);
     }
     @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f0f0f;
-        --surface: #1a1a1a;
-        --border: #2a2a2a;
-        --text: #f0f0f0;
-        --text-dim: #999;
-        --accent: #3b82f6;
-        --success: #10b981;
-        --warning: #f59e0b;
-        --code-bg: #1e1e1e;
+      :root[data-theme="system"] {
+        color-scheme: dark;
+        --bg:            #141009;
+        --surface:       #1D1810;
+        --surface-2:     #262017;
+        --border:        #332B20;
+        --border-strong: #463B2C;
+        --text:          #F1E9DC;
+        --text-dim:      #A99C88;
+        --accent:        #E2865C;
+        --accent-hover:  #F3A079;
+        --accent-soft:   rgba(226,134,92,0.16);
+        --accent-ring:   rgba(226,134,92,0.45);
+        --on-accent:     #1B1209;
+        --success:       #5FB97E;
+        --success-soft:  rgba(95,185,126,0.16);
+        --warning:       #E0A24B;
+        --warning-soft:  rgba(224,162,75,0.16);
+        --danger:        #E5736A;
+        --danger-soft:   rgba(229,115,106,0.16);
+        --code-bg:       #262017;
+        --recv-bubble:   #262017;
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.45);
+        --shadow-md: 0 8px 26px rgba(0,0,0,0.5);
+        --shadow-lg: 0 24px 60px rgba(0,0,0,0.62);
       }
     }
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      padding: 2rem 1rem;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
+      padding: 2.5rem 1.25rem 4rem;
+      font-family: var(--font-sans);
+      background:
+        radial-gradient(1200px 480px at 8% -10%, var(--accent-soft), transparent 60%),
+        radial-gradient(1000px 520px at 112% -4%, var(--accent-soft), transparent 55%),
+        var(--bg);
+      background-attachment: fixed;
       color: var(--text);
-      line-height: 1.5;
+      line-height: 1.55;
+      letter-spacing: -0.006em;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
-    .container { max-width: 880px; margin: 0 auto; }
-    header { margin-bottom: 2rem; }
-    h1 { margin: 0 0 0.5rem; font-size: 1.75rem; font-weight: 600; }
+    ::selection { background: var(--accent-soft); }
+    a { color: var(--accent); }
+    .container { max-width: 920px; margin: 0 auto; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    /* ── Masthead ─────────────────────────────────────────────── */
+    .masthead {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 1.15rem;
+      padding: 1.6rem 1.75rem;
+      margin-bottom: 1.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-md);
+      overflow: hidden;
+      animation: rise 0.5s ease both;
+    }
+    .masthead::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(420px 200px at 88% -40%, var(--accent-soft), transparent 70%);
+      pointer-events: none;
+    }
+    .mast-left { display: flex; align-items: center; gap: 1.15rem; flex: 1; min-width: 0; z-index: 1; }
+    .masthead svg { flex-shrink: 0; filter: drop-shadow(0 4px 10px rgba(192,97,59,0.25)); }
+    h1 {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2rem);
+      line-height: 1.05;
+      letter-spacing: -0.025em;
+    }
     h1 .badge {
-      display: inline-block;
-      background: var(--success);
-      color: white;
-      font-size: 0.8rem;
-      padding: 0.15rem 0.6rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      background: var(--success-soft);
+      color: var(--success);
+      font-family: var(--font-sans);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.6rem;
       border-radius: 999px;
       vertical-align: middle;
       margin-left: 0.5rem;
-      font-weight: 500;
     }
-    .subtitle { color: var(--text-dim); font-size: 0.95rem; }
+    h1 .badge::before {
+      content: '';
+      width: 0.45rem; height: 0.45rem;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 7px currentColor;
+    }
+    .subtitle { color: var(--text-dim); font-size: 0.95rem; margin: 0.4rem 0 0; }
 
-    /* v1.17.1: tab navigation (Overview / Peers / Teams / Install) */
-    .tabs {
-      display: flex;
-      gap: 0.25rem;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 1.5rem;
-      overflow-x: auto;
+    /* ── Theme toggle (segmented) ─────────────────────────────── */
+    .theme-toggle {
+      position: relative; z-index: 1;
+      display: inline-flex;
+      gap: 0.15rem;
+      padding: 0.25rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      flex-shrink: 0;
     }
+    .theme-toggle button {
+      width: 2rem; height: 2rem;
+      display: grid; place-items: center;
+      border: none; background: transparent;
+      color: var(--text-dim);
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: background 0.18s, color 0.18s, transform 0.18s;
+    }
+    .theme-toggle button:hover { color: var(--text); transform: translateY(-1px); }
+    .theme-toggle button.active {
+      background: var(--surface);
+      color: var(--accent);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ── Tabs (segmented pill bar) ────────────────────────────── */
+    .tabs {
+      display: inline-flex;
+      gap: 0.2rem;
+      padding: 0.3rem;
+      max-width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 1.75rem;
+      overflow-x: auto;
+      animation: rise 0.5s ease 0.04s both;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
     .tab-btn {
       background: transparent;
       border: none;
       color: var(--text-dim);
-      padding: 0.6rem 1rem;
-      font-family: inherit;
-      font-size: 0.92rem;
+      padding: 0.5rem 1.1rem;
+      border-radius: 999px;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 600;
       cursor: pointer;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -1px;
       white-space: nowrap;
-      transition: color 0.1s, border-color 0.1s;
+      transition: color 0.18s, background 0.18s, box-shadow 0.18s;
     }
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
-      font-weight: 500;
+      color: var(--on-accent);
+      background: linear-gradient(180deg, var(--accent), var(--accent-hover));
+      box-shadow: var(--shadow-sm);
     }
     body[data-active-tab="overview"] .card:not(.tab-overview),
     body[data-active-tab="peers"]    .card:not(.tab-peers),
@@ -88,80 +260,103 @@
     body[data-active-tab="chat"]     .card:not(.tab-chat) {
       display: none;
     }
+
+    /* ── Cards ────────────────────────────────────────────────── */
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
+      border-radius: var(--radius);
+      padding: 1.6rem 1.75rem;
+      margin-bottom: 1.4rem;
+      box-shadow: var(--shadow-sm);
+      transition: box-shadow 0.22s, border-color 0.22s;
+      animation: rise 0.45s ease both;
+    }
+    .card:hover { box-shadow: var(--shadow-md); }
+    .card--accent {
+      background:
+        linear-gradient(180deg, var(--accent-soft), transparent 60%),
+        var(--surface);
+      border-color: var(--accent-ring);
     }
     .card h2 {
-      margin: 0 0 1rem;
-      font-size: 1.1rem;
+      margin: 0 0 1.1rem;
+      font-family: var(--font-display);
+      font-size: 1.18rem;
       font-weight: 600;
+      letter-spacing: -0.015em;
     }
     .meta {
       display: grid;
-      grid-template-columns: 140px 1fr;
-      gap: 0.5rem 1rem;
-      font-size: 0.92rem;
+      grid-template-columns: 150px 1fr;
+      gap: 0.6rem 1rem;
+      font-size: 0.93rem;
+      align-items: center;
     }
-    .meta .key { color: var(--text-dim); }
+    .meta .key { color: var(--text-dim); font-weight: 500; }
     code {
       background: var(--code-bg);
-      padding: 0.15rem 0.4rem;
-      border-radius: 3px;
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 0.88em;
+      border: 1px solid var(--border);
+      padding: 0.12rem 0.42rem;
+      border-radius: var(--radius-xs);
+      font-family: var(--font-mono);
+      font-size: 0.84em;
     }
+
+    /* ── Status pill ──────────────────────────────────────────── */
     .relay-status {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      padding: 0.25rem 0.75rem;
+      gap: 0.45rem;
+      padding: 0.28rem 0.8rem;
       border-radius: 999px;
-      font-size: 0.85rem;
-      font-weight: 500;
+      font-size: 0.82rem;
+      font-weight: 600;
     }
-    .relay-status.running {
-      background: rgba(16, 185, 129, 0.15);
-      color: var(--success);
-    }
-    .relay-status.stopped {
-      background: rgba(217, 119, 6, 0.15);
-      color: var(--warning);
-    }
+    .relay-status.running { background: var(--success-soft); color: var(--success); }
+    .relay-status.stopped { background: var(--warning-soft); color: var(--warning); }
     .relay-status::before {
       content: '';
-      width: 0.6rem;
-      height: 0.6rem;
+      width: 0.58rem; height: 0.58rem;
       border-radius: 50%;
       background: currentColor;
+      box-shadow: 0 0 8px currentColor;
     }
+
+    /* ── Peer cards ───────────────────────────────────────────── */
     .peer-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.25rem;
+      border-radius: var(--radius-sm);
+      padding: 1.3rem 1.4rem;
       margin-bottom: 1rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
+    .peer-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
     .peer-card .peer-header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
+      gap: 0.75rem;
       margin-bottom: 1rem;
-      padding-bottom: 0.75rem;
+      padding-bottom: 0.85rem;
       border-bottom: 1px solid var(--border);
     }
     .peer-card h3 {
       margin: 0;
-      font-size: 1.05rem;
+      font-family: var(--font-display);
+      font-size: 1.06rem;
       font-weight: 600;
+      letter-spacing: -0.01em;
     }
     .peer-card .peer-id {
       color: var(--text-dim);
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 0.85rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
     }
     .peer-card .role-snippet {
       font-size: 0.88rem;
@@ -170,20 +365,26 @@
       white-space: pre-wrap;
       max-height: 4.5em;
       overflow: hidden;
+      position: relative;
     }
+
+    /* ── Install / terminal block ─────────────────────────────── */
     .install-block {
-      background: var(--code-bg);
-      border-radius: 6px;
-      padding: 1rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1.05rem 1.1rem;
       position: relative;
       overflow-x: auto;
     }
     .install-block code {
       background: transparent;
+      border: none;
       padding: 0;
-      font-size: 0.86rem;
+      font-size: 0.85rem;
       display: block;
       white-space: pre;
+      color: var(--text);
     }
     .install-block .copy-btn {
       position: absolute;
@@ -192,106 +393,172 @@
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text-dim);
-      padding: 0.3rem 0.7rem;
-      border-radius: 4px;
-      font-size: 0.78rem;
+      padding: 0.32rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 600;
       cursor: pointer;
-      transition: color 0.15s;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
-    .install-block .copy-btn:hover {
-      color: var(--accent);
-    }
-    .install-block .copy-btn.copied {
-      color: var(--success);
-    }
+    .install-block .copy-btn:hover { color: var(--accent); border-color: var(--accent-ring); }
+    .install-block .copy-btn.copied { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+
     .links {
-      margin-top: 0.75rem;
+      margin-top: 0.85rem;
       display: flex;
-      gap: 1rem;
-      font-size: 0.85rem;
+      gap: 1.1rem;
+      flex-wrap: wrap;
+      font-size: 0.84rem;
     }
-    .links a {
-      color: var(--accent);
-      text-decoration: none;
-    }
+    .links a { color: var(--accent); text-decoration: none; font-weight: 500; }
     .links a:hover { text-decoration: underline; }
+
     .footer-actions {
-      margin-top: 2rem;
+      margin-top: 2.25rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 1rem;
+      flex-wrap: wrap;
     }
+
+    /* ── Buttons ──────────────────────────────────────────────── */
     .btn {
-      padding: 0.6rem 1.2rem;
+      padding: 0.6rem 1.25rem;
       border: 1px solid var(--border);
-      border-radius: 6px;
-      background: transparent;
+      border-radius: 999px;
+      background: var(--surface);
       color: var(--text);
-      font-family: inherit;
-      font-size: 0.92rem;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 600;
       cursor: pointer;
       text-decoration: none;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      transition: background 0.18s, border-color 0.18s, transform 0.12s, box-shadow 0.18s, color 0.18s;
     }
-    .btn:hover { background: var(--code-bg); }
+    .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary {
+      background: linear-gradient(180deg, var(--accent), var(--accent-hover));
+      color: var(--on-accent);
+      border-color: transparent;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn-primary:hover { filter: brightness(1.06); background: linear-gradient(180deg, var(--accent), var(--accent-hover)); border-color: transparent; }
+    .btn-secondary { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-ring); }
+    .btn-secondary:hover { background: var(--accent-soft); border-color: var(--accent); }
+    .btn-danger { color: var(--danger); border-color: var(--border); background: var(--surface); }
+    .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+
     .note {
-      font-size: 0.85rem;
+      font-size: 0.86rem;
       color: var(--text-dim);
       margin-top: 1rem;
-      padding: 0.75rem 1rem;
-      background: var(--code-bg);
+      padding: 0.8rem 1rem;
+      background: var(--accent-soft);
       border-left: 3px solid var(--accent);
-      border-radius: 0 6px 6px 0;
+      border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
     }
     .btn-mini {
-      padding: 0.2rem 0.6rem;
+      padding: 0.28rem 0.7rem;
       border: 1px solid var(--border);
       background: var(--surface);
       color: var(--text);
       font-size: 0.78rem;
-      border-radius: 4px;
+      font-weight: 600;
+      border-radius: 999px;
       cursor: pointer;
-      font-family: inherit;
+      font-family: var(--font-sans);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
-    .btn-mini:hover { background: var(--code-bg); }
-    .btn-mini-danger { color: #c0392b; }
-    .btn-mini-danger:hover { background: #c0392b; color: white; border-color: #c0392b; }
-    .btn-sm { padding: 0.4rem 0.9rem; font-size: 0.85rem; }
+    .btn-mini:hover { background: var(--surface-2); border-color: var(--border-strong); }
+    .btn-mini-danger { color: var(--danger); }
+    .btn-mini-danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .btn-sm { padding: 0.42rem 0.95rem; font-size: 0.84rem; }
+
+    /* ── Forms ────────────────────────────────────────────────── */
     .peer-edit-form input[type="text"],
+    .peer-edit-form input[type="number"],
     .peer-edit-form textarea {
       width: 100%;
-      padding: 0.4rem 0.6rem;
+      padding: 0.5rem 0.7rem;
       border: 1px solid var(--border);
-      border-radius: 4px;
-      font-family: inherit;
+      border-radius: var(--radius-xs);
+      font-family: var(--font-sans);
       font-size: 0.9rem;
-      background: var(--surface);
+      background: var(--bg);
       color: var(--text);
       box-sizing: border-box;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
     .peer-edit-form label {
       display: block;
       font-weight: 600;
       font-size: 0.85rem;
-      margin-bottom: 0.25rem;
+      margin-bottom: 0.3rem;
     }
-    .grid { display: grid; gap: 0.75rem; }
+    .grid { display: grid; gap: 0.85rem; }
     .grid-2 { grid-template-columns: 1fr 1fr; }
-    .field input[type="text"], .field textarea, .field select {
-      width: 100%; padding: 0.5rem 0.7rem; border: 1px solid var(--border);
-      border-radius: 4px; font-family: inherit; font-size: 0.92rem;
-      background: var(--surface); color: var(--text); box-sizing: border-box;
+    .field input[type="text"], .field input[type="number"], .field textarea, .field select {
+      width: 100%; padding: 0.55rem 0.75rem; border: 1px solid var(--border);
+      border-radius: var(--radius-xs); font-family: var(--font-sans); font-size: 0.92rem;
+      background: var(--bg); color: var(--text); box-sizing: border-box;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .field label { display: block; font-weight: 600; font-size: 0.88rem; margin-bottom: 0.25rem; color: var(--text); }
+    .field label { display: block; font-weight: 600; font-size: 0.88rem; margin-bottom: 0.3rem; color: var(--text); }
     .field .hint { font-weight: normal; color: var(--text-dim); font-size: 0.78rem; }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-ring);
+    }
+    select,
+    textarea,
+    input[type="text"], input[type="number"], input[type="search"] {
+      font-family: var(--font-sans);
+      font-size: 0.92rem;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+    }
+    select, input[type="text"], input[type="number"], input[type="search"] { padding: 0.5rem 0.7rem; }
+    textarea { padding: 0.55rem 0.7rem; }
+    #chat-content { background: var(--bg); }
+    .checkbox-row { display: flex; align-items: center; gap: 0.4rem; }
+    input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; cursor: pointer; }
+
     .toast-success { color: var(--success); }
-    .toast-error   { color: var(--warning); }
+    .toast-error   { color: var(--danger); }
+
+    /* ── Tables (scribe state) ────────────────────────────────── */
+    #scribe-table th { color: var(--text-dim); font-weight: 600; }
+    #scribe-table tbody tr:hover { background: var(--surface-2); }
+
+    /* ── Team chips ───────────────────────────────────────────── */
+    .team-chip { transition: background 0.15s, color 0.15s; }
+    .team-chip:hover { background: var(--danger-soft) !important; color: var(--danger); }
+
+    /* ── Scrollbars ───────────────────────────────────────────── */
+    #chat-conversation::-webkit-scrollbar, #repo-log::-webkit-scrollbar { width: 8px; }
+    #chat-conversation::-webkit-scrollbar-thumb, #repo-log::-webkit-scrollbar-thumb {
+      background: var(--border-strong); border-radius: 999px;
+    }
+
+    @media (max-width: 620px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .masthead { flex-direction: column; align-items: flex-start; }
+    }
   </style>
 </head>
 <body data-active-tab="overview">
   <div class="container">
-    <header style="display:flex;align-items:center;gap:1rem">
+    <header class="masthead">
+      <div class="mast-left">
       <svg width="56" height="56" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Clade A2A" style="flex-shrink:0">
         <defs>
           <radialGradient id="sparkRes" cx="50%" cy="50%" r="50%">
@@ -316,8 +583,14 @@
         <circle cx="128" cy="128" r="6" fill="#FFF5EE" opacity="0.7"/>
       </svg>
       <div>
-        <h1 style="margin:0">{{ setup.project_name }} <span class="badge">Ready</span></h1>
-        <p class="subtitle" style="margin:0.25rem 0 0">Send each peer their install command. They paste, hit enter, and they're online.</p>
+        <h1>{{ setup.project_name }} <span class="badge">Ready</span></h1>
+        <p class="subtitle">Send each peer their install command. They paste, hit enter, and they're online.</p>
+      </div>
+      </div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme-val="system" onclick="setTheme('system')" title="Match system">◐</button>
+        <button type="button" data-theme-val="light"  onclick="setTheme('light')"  title="Light">☀</button>
+        <button type="button" data-theme-val="dark"   onclick="setTheme('dark')"   title="Dark">☾</button>
       </div>
     </header>
 
@@ -355,9 +628,9 @@
     </div>
 
     <!-- v1.12.1: one-shot multi-peer installer -->
-    <div class="card tab-install" style="background:#fef7f3;border-left:4px solid #DA7756">
-      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Install all peers on this machine</h2>
-      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+    <div class="card tab-install card--accent">
+      <h2 style="margin:0 0 0.5rem">Install all peers on this machine</h2>
+      <p style="margin:0 0 0.75rem;color:var(--text-dim);font-size:0.92rem">
         Single-machine setup? Run one command to install every peer locally (writes
         <code>~/clade-agent/&lt;peer&gt;.yaml</code> + scripts for each).
         For multi-machine deploys use the per-peer install commands below instead.
@@ -453,9 +726,9 @@
     </div>
 
     <!-- Add new peer card -->
-    <div class="card tab-peers" style="background:#fef7f3;border-left:4px solid #DA7756">
-      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Add a new peer</h2>
-      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+    <div class="card tab-peers card--accent">
+      <h2 style="margin:0 0 0.5rem">Add a new peer</h2>
+      <p style="margin:0 0 0.75rem;color:var(--text-dim);font-size:0.92rem">
         Generates HMAC secrets, updates every existing peer's yaml (their daemons hot-reload within ~5s), writes new yaml + scripts + workdir.
         Only the new peer's daemon needs to be started.
       </p>
@@ -492,7 +765,7 @@
         <textarea id="new-peer-ead" rows="3" placeholder="/home/user/projects/foo&#10;/var/www/myapp"></textarea>
       </div>
       <div style="display:flex;gap:0.75rem;align-items:center;margin-top:0.75rem">
-        <button class="btn btn-primary" style="background:#DA7756;color:white;border:none" onclick="addPeer()">Add peer</button>
+        <button class="btn btn-primary" onclick="addPeer()">Add peer</button>
         <span id="add-peer-result" style="font-size:0.9rem"></span>
       </div>
     </div>
@@ -530,7 +803,7 @@
     </div>
 
     {# v1.17.0: Cycle activity card — kill-switch + scribe state + recent commits #}
-    <div class="card tab-overview" style="border-left:4px solid #DA7756">
+    <div class="card tab-overview card--accent">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem">
         <h2 style="margin:0">Cycle activity <span style="font-size:0.7em;color:var(--text-dim)">(scribe + kill-switch, refresh every 5s)</span></h2>
         <div style="display:flex;gap:0.5rem">
@@ -562,55 +835,59 @@
       <div id="repo-log" style="font-family:ui-monospace,Consolas,monospace;font-size:0.82rem;background:var(--code-bg);padding:0.6rem;border-radius:6px;max-height:280px;overflow-y:auto">Loading…</div>
     </div>
 
-    {# v1.18.0: Chat tab — act as any peer, send messages to other peers via HMAC-signed envelope. #}
-    <div class="card tab-chat">
-      <h2>Chat — act as a peer</h2>
-      <p class="hint" style="margin-top:0">Pick a peer to act as, pick a recipient, send a message. Server signs the envelope with the from-peer's pair-secret and POSTs to the relay. <strong>Expect reply</strong> blocks up to 90s for a sync ask; otherwise fire-and-forget.</p>
-
-      <div class="grid grid-2" style="gap:0.75rem;margin-bottom:0.75rem">
-        <div class="field" style="margin:0">
-          <label>From (act as)</label>
-          <select id="chat-from">
+    {# v1.18.1: Chat tab redesigned as conversation view (iMessage-style bubbles). #}
+    <div class="card tab-chat" style="padding:0;overflow:hidden">
+      {# Top bar — who's chatting + thread management #}
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;padding:0.75rem 1rem;border-bottom:1px solid var(--border);background:var(--surface)">
+        <div style="display:flex;gap:0.4rem;align-items:center;flex:1;min-width:280px">
+          <label style="margin:0;font-size:0.85rem;color:var(--text-dim)">As</label>
+          <select id="chat-from" style="padding:0.35rem 0.5rem;min-width:140px">
+            {% for peer_id, peer in setup.peers.items() %}
+            <option value="{{ peer_id }}">{{ peer_id }} — {{ peer.display_name|e }}</option>
+            {% endfor %}
+          </select>
+          <span style="color:var(--text-dim)">↔</span>
+          <label style="margin:0;font-size:0.85rem;color:var(--text-dim)">with</label>
+          <select id="chat-to" style="padding:0.35rem 0.5rem;min-width:140px">
             {% for peer_id, peer in setup.peers.items() %}
             <option value="{{ peer_id }}">{{ peer_id }} — {{ peer.display_name|e }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="field" style="margin:0">
-          <label>To (recipient)</label>
-          <select id="chat-to">
-            {% for peer_id, peer in setup.peers.items() %}
-            <option value="{{ peer_id }}">{{ peer_id }} — {{ peer.display_name|e }}</option>
-            {% endfor %}
+        <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
+          <select id="chat-thread-picker" style="padding:0.35rem 0.5rem;font-size:0.85rem;min-width:200px">
+            <option value="">(no thread yet)</option>
           </select>
+          <button class="btn btn-sm" onclick="newChatThread()">+ New thread</button>
+          <button class="btn btn-sm btn-danger" onclick="clearChatThread()" title="Delete this thread from browser history">Clear</button>
         </div>
       </div>
 
-      <div class="field">
-        <label>Content</label>
-        <textarea id="chat-content" rows="3" placeholder="Type your message…"></textarea>
-      </div>
-
-      <div class="grid grid-2" style="gap:0.75rem;margin:0.5rem 0">
-        <div class="checkbox-row" style="margin:0">
-          <input type="checkbox" id="chat-expect-reply">
-          <label for="chat-expect-reply" style="margin:0;font-weight:normal">Expect reply (sync ask, blocks up to <span id="chat-timeout-display">90</span>s)</label>
-        </div>
-        <div class="field" style="margin:0">
-          <label style="font-size:0.85rem">Thread ID <span class="hint">(optional — paste to continue a thread)</span></label>
-          <input type="text" id="chat-thread-id" placeholder="leave empty for new conversation">
+      {# Conversation viewport — fills available height, scrollable, bubbles #}
+      <div id="chat-conversation" style="min-height:380px;max-height:540px;overflow-y:auto;padding:1rem;background:var(--bg);display:flex;flex-direction:column;gap:0.4rem">
+        <div id="chat-empty" style="margin:auto;color:var(--text-dim);font-size:0.9rem;text-align:center">
+          No messages yet. Pick "as" + "with" above and start typing.
         </div>
       </div>
 
-      <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem">
-        <button class="btn btn-primary" onclick="sendChat()">Send</button>
-        <button class="btn" onclick="document.getElementById('chat-content').value = ''">Clear</button>
-        <span id="chat-status" style="margin-left:auto;font-size:0.85rem;color:var(--text-dim)"></span>
-      </div>
-
-      <h3 style="font-size:0.95rem;margin:1.25rem 0 0.4rem">Recent activity (this browser session)</h3>
-      <div id="chat-history" style="max-height:400px;overflow-y:auto;font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;background:var(--code-bg);padding:0.6rem;border-radius:6px">
-        <div style="color:var(--text-dim)">No messages sent yet.</div>
+      {# Composer #}
+      <div style="border-top:1px solid var(--border);padding:0.6rem 1rem;background:var(--surface)">
+        <div style="display:flex;gap:0.5rem;align-items:flex-end">
+          <textarea id="chat-content" rows="2" placeholder="Type a message and press Enter to send (Shift+Enter for newline)…"
+                    style="flex:1;resize:vertical;min-height:42px"
+                    onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChat(); }"></textarea>
+          <div style="display:flex;flex-direction:column;gap:0.3rem;min-width:130px">
+            <div class="checkbox-row" style="margin:0;font-size:0.82rem">
+              <input type="checkbox" id="chat-expect-reply" checked>
+              <label for="chat-expect-reply" style="margin:0;font-weight:normal">Wait for reply</label>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="sendChat()" id="chat-send-btn">Send</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:0.35rem">
+          <span style="font-size:0.78rem;color:var(--text-dim)" id="chat-thread-id-display">thread: (new)</span>
+          <span id="chat-status" style="font-size:0.78rem;color:var(--text-dim)"></span>
+        </div>
       </div>
     </div>
 
@@ -646,6 +923,23 @@
       setActiveTab(hashTab || saved || 'overview');
     })();
     window.addEventListener('hashchange', () => setActiveTab((location.hash || '').replace(/^#/, '')));
+
+    // Theme switcher: system / light / dark, persisted to localStorage. The
+    // pre-paint <head> script already applied the saved value to avoid a flash;
+    // this keeps the segmented control highlighted and handles clicks.
+    function setTheme(val) {
+      if (!['system', 'light', 'dark'].includes(val)) val = 'system';
+      document.documentElement.setAttribute('data-theme', val);
+      try { localStorage.setItem('clade-theme', val); } catch {}
+      document.querySelectorAll('.theme-toggle button').forEach(b => {
+        b.classList.toggle('active', b.dataset.themeVal === val);
+      });
+    }
+    (function initTheme() {
+      let saved = 'system';
+      try { saved = localStorage.getItem('clade-theme') || 'system'; } catch {}
+      setTheme(saved);
+    })();
 
     function copyText(btn) {
       const code = btn.parentElement.querySelector('code');
@@ -838,7 +1132,8 @@
     setInterval(refreshRepoLog, 5000);
 
     // ===========================================================================
-    // v1.18.0: Chat tab — send messages as any peer via HMAC-signed envelope
+    // v1.18.1: Chat tab — conversation view (iMessage-style bubbles)
+    // Storage: localStorage key per (from|to) pair → {activeThreadId, threads}.
     // ===========================================================================
 
     function escHTML(s) {
@@ -846,75 +1141,192 @@
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
     }
-
-    function renderChatEntry(entry) {
-      const ts = new Date(entry.ts).toLocaleTimeString();
-      const head = `<div style="margin:0.5rem 0;border-left:3px solid ${entry.color};padding:0.3rem 0.6rem;background:var(--surface);border-radius:0 4px 4px 0">`;
-      let body = `<div style="color:var(--text-dim);font-size:0.78rem">${escHTML(ts)} • ${escHTML(entry.from)} → ${escHTML(entry.to)} • ${entry.expect_reply ? 'ask' : 'send'}${entry.thread_id ? ' • thread:' + escHTML(entry.thread_id.slice(0,8)) : ''}</div>`;
-      body += `<div style="margin:0.2rem 0">${escHTML(entry.content)}</div>`;
-      if (entry.error) {
-        body += `<div style="color:var(--danger);margin-top:0.2rem"><strong>error:</strong> ${escHTML(entry.error)}</div>`;
-      } else if (entry.response) {
-        const respText = typeof entry.response === 'string' ? entry.response : JSON.stringify(entry.response, null, 2);
-        body += `<div style="color:var(--success);margin-top:0.2rem"><strong>reply:</strong> <pre style="white-space:pre-wrap;margin:0.2rem 0">${escHTML(respText)}</pre></div>`;
-        if (entry.correlation_id) {
-          body += `<div style="font-size:0.78rem;color:var(--text-dim)">msg_id:${escHTML(entry.msg_id.slice(0,8))} • correlation:${escHTML(entry.correlation_id.slice(0,8))}</div>`;
-        }
-      } else {
-        body += `<div style="color:var(--text-dim);font-size:0.78rem">sent (fire-and-forget) • msg_id:${escHTML(entry.msg_id.slice(0,8))}</div>`;
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    }
+    function extractText(payload) {
+      if (payload == null) return '';
+      if (typeof payload === 'string') return payload;
+      if (typeof payload === 'object') {
+        if ('text' in payload) return String(payload.text);
+        if ('answer' in payload) return String(payload.answer);
+        return JSON.stringify(payload, null, 2);
       }
-      return head + body + '</div>';
+      return String(payload);
     }
 
-    const _chatHistory = [];
-    function pushChatHistory(entry) {
-      _chatHistory.unshift(entry);
-      if (_chatHistory.length > 50) _chatHistory.length = 50;
-      const box = document.getElementById('chat-history');
-      box.innerHTML = _chatHistory.map(renderChatEntry).join('') ||
-        '<div style="color:var(--text-dim)">No messages sent yet.</div>';
+    function chatKey(from, to)      { return `clade-chat:${PROJECT_TOKEN}:${from}|${to}`; }
+    function loadChatPair(from, to) {
+      try {
+        const raw = localStorage.getItem(chatKey(from, to));
+        if (raw) return JSON.parse(raw);
+      } catch {}
+      return { activeThreadId: null, threads: {} };
     }
+    function saveChatPair(from, to, data) {
+      try { localStorage.setItem(chatKey(from, to), JSON.stringify(data)); } catch {}
+    }
+
+    function activeChat() {
+      const from = document.getElementById('chat-from').value;
+      const to = document.getElementById('chat-to').value;
+      const pair = loadChatPair(from, to);
+      return { from, to, pair };
+    }
+
+    function renderBubble(msg, fromMe, peerLabel) {
+      const align  = fromMe ? 'flex-end' : 'flex-start';
+      const bg     = fromMe ? 'linear-gradient(180deg,var(--accent),var(--accent-hover))' : 'var(--recv-bubble)';
+      const fg     = fromMe ? 'var(--on-accent)' : 'var(--text)';
+      const border = fromMe ? 'none' : '1px solid var(--border)';
+      const radius = fromMe ? '16px 16px 5px 16px' : '16px 16px 16px 5px';
+      const labelColor = fromMe ? 'var(--on-accent);opacity:0.78' : 'var(--accent)';
+      const metaColor  = fromMe ? 'var(--on-accent);opacity:0.72' : 'var(--text-dim)';
+      const errColor   = fromMe ? 'var(--on-accent);opacity:0.92' : 'var(--danger)';
+      const errFooter = msg.error
+        ? `<div style="font-size:0.72rem;margin-top:0.3rem;color:${errColor}">⚠ ${escHTML(msg.error)}</div>` : '';
+      const meta = `<div style="font-size:0.68rem;margin-top:0.3rem;color:${metaColor}">${fmtTime(msg.ts)}${msg.kind==='send'?' · sent':''}${msg.msg_id?(' · '+escHTML(msg.msg_id.slice(0,6))):''}</div>`;
+      // NB: keep tags adjacent (no indentation newlines) — the text div uses
+      // white-space:pre-wrap so any whitespace between tags would render as
+      // blank lines and inflate the bubble.
+      return `<div style="display:flex;justify-content:${align};max-width:100%">`
+        + `<div style="max-width:76%;padding:0.55rem 0.8rem;border-radius:${radius};background:${bg};color:${fg};border:${border};box-shadow:var(--shadow-sm);word-wrap:break-word;overflow-wrap:anywhere">`
+        + `<div style="font-size:0.68rem;font-weight:600;letter-spacing:0.02em;margin-bottom:0.2rem;color:${labelColor}">${escHTML(peerLabel)}</div>`
+        + `<div style="white-space:pre-wrap;line-height:1.45">${escHTML(msg.text)}</div>`
+        + errFooter + meta
+        + `</div></div>`;
+    }
+
+    const CHAT_EMPTY_HTML = '<div id="chat-empty" style="margin:auto;color:var(--text-dim);font-size:0.9rem;text-align:center">No messages yet. Pick "as" + "with" above and start typing.</div>';
+
+    function renderConversation() {
+      const { from, to, pair } = activeChat();
+      const tid = pair.activeThreadId;
+      const msgs = (tid && pair.threads[tid]) || [];
+      const box = document.getElementById('chat-conversation');
+
+      // Update thread picker dropdown
+      const picker = document.getElementById('chat-thread-picker');
+      const tids = Object.keys(pair.threads).sort((a,b) => (pair.threads[b][0]?.ts || 0) - (pair.threads[a][0]?.ts || 0));
+      picker.innerHTML = tids.length
+        ? tids.map(id => `<option value="${escHTML(id)}" ${id===tid?'selected':''}>${escHTML(id.slice(0,8))} (${pair.threads[id].length} msgs)</option>`).join('')
+        : '<option value="">(no thread yet)</option>';
+
+      document.getElementById('chat-thread-id-display').textContent = tid ? `thread: ${tid.slice(0,12)}…` : 'thread: (new — created on first send)';
+
+      // Rebuild innerHTML each time — never hold a stale reference to #chat-empty
+      // (it gets wiped when we replace box.innerHTML with bubbles; the previous
+      // version cached it and crashed on the second render).
+      if (!msgs.length) {
+        box.innerHTML = CHAT_EMPTY_HTML;
+        return;
+      }
+      box.innerHTML = msgs.map(m => renderBubble(m, m.dir === 'sent', m.dir === 'sent' ? from : to)).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function newChatThread() {
+      const { from, to, pair } = activeChat();
+      pair.activeThreadId = null;
+      saveChatPair(from, to, pair);
+      renderConversation();
+      document.getElementById('chat-content').focus();
+    }
+
+    function clearChatThread() {
+      const { from, to, pair } = activeChat();
+      if (!pair.activeThreadId) { renderConversation(); return; }
+      if (!confirm(`Delete this thread (${pair.activeThreadId.slice(0,8)}…) from browser history?\nThe peers' own audit DBs are NOT touched.`)) return;
+      delete pair.threads[pair.activeThreadId];
+      pair.activeThreadId = null;
+      saveChatPair(from, to, pair);
+      renderConversation();
+    }
+
+    document.getElementById('chat-from').addEventListener('change', renderConversation);
+    document.getElementById('chat-to').addEventListener('change', renderConversation);
+    document.getElementById('chat-thread-picker').addEventListener('change', (e) => {
+      const { from, to, pair } = activeChat();
+      pair.activeThreadId = e.target.value || null;
+      saveChatPair(from, to, pair);
+      renderConversation();
+    });
+    renderConversation();
 
     async function sendChat() {
-      const from_peer = document.getElementById('chat-from').value;
-      const to_peer = document.getElementById('chat-to').value;
-      const content = document.getElementById('chat-content').value;
+      const content = document.getElementById('chat-content').value.trim();
       const expect_reply = document.getElementById('chat-expect-reply').checked;
-      const thread_id = document.getElementById('chat-thread-id').value.trim() || null;
+      const sendBtn = document.getElementById('chat-send-btn');
       const statusEl = document.getElementById('chat-status');
+      const { from, to, pair } = activeChat();
 
-      if (!content.trim()) { statusEl.textContent = '✗ content required'; statusEl.style.color = 'var(--danger)'; return; }
-      if (from_peer === to_peer) { statusEl.textContent = '✗ from and to must differ'; statusEl.style.color = 'var(--danger)'; return; }
+      if (!content) { statusEl.textContent = '✗ message required'; statusEl.style.color = 'var(--danger)'; return; }
+      if (from === to) { statusEl.textContent = '✗ "as" and "with" must differ'; statusEl.style.color = 'var(--danger)'; return; }
 
-      const baseEntry = {
-        ts: Date.now(), from: from_peer, to: to_peer, content, expect_reply, thread_id,
-        color: expect_reply ? '#2563eb' : '#059669',
-      };
+      const thread_id = pair.activeThreadId || null;
+      const sentTs = Date.now();
+      const sentMsg = { dir: 'sent', ts: sentTs, text: content,
+                        kind: expect_reply ? 'ask' : 'send' };
+
+      // Optimistically render the outgoing bubble before the network call
+      const localThreadId = thread_id || '__pending__';
+      if (!pair.threads[localThreadId]) pair.threads[localThreadId] = [];
+      pair.threads[localThreadId].push(sentMsg);
+      pair.activeThreadId = localThreadId;
+      saveChatPair(from, to, pair);
+      renderConversation();
+
+      document.getElementById('chat-content').value = '';
+      sendBtn.disabled = true;
       statusEl.style.color = 'var(--text-dim)';
-      statusEl.textContent = expect_reply ? '⏳ waiting for reply (up to 90s)…' : '⏳ sending…';
+      statusEl.textContent = expect_reply ? '⏳ waiting for reply…' : '⏳ sending…';
 
       try {
         const r = await fetch(`/api/setup/${PROJECT_TOKEN}/chat/send`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({from_peer, to_peer, content, expect_reply,
-                                timeout_s: 90, thread_id}),
+          body: JSON.stringify({from_peer: from, to_peer: to, content, expect_reply,
+                                timeout_s: 180, thread_id}),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
         if (data.error) throw new Error(data.error);
-        pushChatHistory({...baseEntry, msg_id: data.msg_id, correlation_id: data.correlation_id,
-                         response: data.response});
-        // If server returned a thread_id we generated, surface it so user can continue
-        if (data.thread_id && !thread_id) {
-          document.getElementById('chat-thread-id').value = data.thread_id;
-          document.getElementById('chat-thread-id').placeholder = 'continuing this thread…';
+
+        // Promote __pending__ thread to real server-generated thread_id (first send only)
+        const realThreadId = data.thread_id || thread_id;
+        if (realThreadId && realThreadId !== localThreadId) {
+          const refreshed = loadChatPair(from, to);
+          refreshed.threads[realThreadId] = (refreshed.threads[localThreadId] || []).slice();
+          delete refreshed.threads[localThreadId];
+          refreshed.activeThreadId = realThreadId;
+          pair.threads = refreshed.threads;
+          pair.activeThreadId = realThreadId;
         }
+        // Attach msg_id to the sent bubble we just rendered
+        const bucket = pair.threads[pair.activeThreadId];
+        if (bucket && bucket.length) bucket[bucket.length - 1].msg_id = data.msg_id;
+
+        // If we got a reply, push the received bubble too
+        if (expect_reply && data.response !== undefined) {
+          bucket.push({
+            dir: 'recv', ts: Date.now(), text: extractText(data.response),
+            msg_id: data.correlation_id || '',
+          });
+        }
+        saveChatPair(from, to, pair);
+        renderConversation();
         statusEl.textContent = expect_reply ? '✓ reply received' : '✓ sent';
         statusEl.style.color = 'var(--success)';
       } catch (e) {
-        pushChatHistory({...baseEntry, msg_id: '????????', error: e.message});
+        // Tag the last sent bubble with error
+        const bucket = pair.threads[pair.activeThreadId];
+        if (bucket && bucket.length) bucket[bucket.length - 1].error = e.message;
+        saveChatPair(from, to, pair);
+        renderConversation();
         statusEl.textContent = '✗ ' + e.message;
         statusEl.style.color = 'var(--danger)';
+      } finally {
+        sendBtn.disabled = false;
       }
     }
 

@@ -228,6 +228,14 @@ curl -fsSL http://<setup-host>:8000/agent/<token>/install | bash
 
 Details: [`scripts/start-setup-server.sh`](scripts/start-setup-server.sh) and the in-browser instructions.
 
+**Dashboard UI (v1.19.0):** the result page at `/setup/{token}` is a tabbed dashboard
+(Overview / Peers / Teams / Chat / Install) with a **System / Light / Dark theme
+toggle** (top-right, persisted in `localStorage`, no flash on load). The Chat tab is a
+person-to-person conversation view — sent bubbles right, received left, grouped per
+thread — backed by `POST /api/setup/{token}/chat/send` (HMAC-signed via
+[`agent/wire.py`](agent/wire.py)). Overview surfaces live presence, the per-peer scribe
+state table, and the kill-switch (Pause ALL / per-peer).
+
 ---
 
 ## Mental model
