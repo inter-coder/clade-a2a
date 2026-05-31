@@ -51,18 +51,24 @@ class PeerInfo(BaseModel):
 
 
 class ScribeConfig(BaseModel):
-    """v1.14.0 (Phase B) — opt-in self-driving documentation loop.
+    """v1.14.0 (Phase B) / v1.15.0 (Phase C) — opt-in self-driving role loop.
 
-    Set on the DO peer (or any peer that should periodically reflect on a shared
-    git substrate). Loop in daemon.py ticks every `interval_minutes`, compares
-    git HEAD of `docs_repo_path` against persisted state, and ONLY spawns
-    `claude --print` when there are new commits. This guarantees zero token
-    spend on idle days.
+    Originally introduced for the DO/scribe peer (Phase B); generalized in Phase C
+    so any role can self-trigger off the shared git substrate. Loop in daemon.py
+    ticks every `interval_minutes`, compares git HEAD of `docs_repo_path` against
+    persisted state, and ONLY spawns `claude --print` when there are new commits.
+    Zero token spend on idle days.
+
+    `round_prompt` overrides the default scribe prompt with role-specific
+    instructions (PD reacts to verdicted reports, DD breaks down directives /
+    verdicts reports, Team picks next TODO and implements it). When None, the
+    daemon uses the original documentation-curator prompt.
     """
     enabled: bool = True
     interval_minutes: int = Field(60, ge=5, le=1440)
     docs_repo_path: str | None = None  # absolute git repo to watch; defaults to extra_add_dirs[0]
     max_rounds_per_day: int = Field(24, ge=1, le=288)
+    round_prompt: str | None = None  # v1.15.0: role-specific override; None → default scribe
 
 
 class Config(BaseModel):

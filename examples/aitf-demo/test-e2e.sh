@@ -111,19 +111,21 @@ expected = {"pd", "dd", "team", "doc"}
 got = {p.stem for p in pd.glob("*.yaml")}
 assert got == expected, f"expected {expected} yamls, got {got}"
 
-# doc has scribe; others don't
+# v1.14.0 (Phase B) + v1.15.0 (Phase C): EVERY peer has scribe block.
+# PD/DD/Team carry role-specific round_prompt; doc falls back to default.
+intervals = {"pd": 30, "dd": 15, "team": 30, "doc": 60}
 for pid in expected:
     d = yaml.safe_load((pd / f"{pid}.yaml").read_text())
-    has_scribe = "scribe" in d
-    if pid == "doc":
-        assert has_scribe, "doc.yaml missing scribe block"
-        s = d["scribe"]
-        assert s["enabled"] is True
-        assert s["interval_minutes"] == 60
-        assert s["max_rounds_per_day"] == 24
-        assert s["docs_repo_path"] == target
-    else:
-        assert not has_scribe, f"{pid}.yaml should NOT have scribe block"
+    assert "scribe" in d, f"{pid}.yaml missing scribe block"
+    s = d["scribe"]
+    assert s["enabled"] is True
+    assert s["interval_minutes"] == intervals[pid], f"{pid} interval wrong: {s['interval_minutes']}"
+    assert s["max_rounds_per_day"] == 24
+    assert s["docs_repo_path"] == target
+    if pid in ("pd", "dd", "team"):
+        assert "round_prompt" in s, f"{pid}.yaml missing role-specific round_prompt"
+    else:  # doc
+        assert "round_prompt" not in s, "doc.yaml should fall back to default scribe prompt"
     assert d["extra_add_dirs"] == [target], f"{pid}.yaml extra_add_dirs wrong: {d['extra_add_dirs']}"
     other_peers = set(d["peers"].keys())
     assert other_peers == expected - {pid}, f"{pid}.yaml peers wrong: {other_peers}"
@@ -132,7 +134,7 @@ for pid in expected:
 team = yaml.safe_load((pd / "team.yaml").read_text())
 assert "Development Team" in team["role"], "team.yaml role not inlined from .md"
 assert "task-tracker" in team["role"], "team.yaml role missing project name"
-print("✓ all 4 yamls structurally correct (scribe only on doc, peers/extra_add_dirs correct, role inlined)")
+print("✓ all 4 yamls structurally correct (scribe on every peer with right intervals + role_prompt, peers/extra_add_dirs correct, role inlined)")
 PY
 
 # ---- Step 5: verify relay alive + result page renders ----

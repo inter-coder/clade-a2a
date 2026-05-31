@@ -41,6 +41,59 @@ AITF_ROLES_REQUIRED: list[tuple[str, str, str]] = [
 AITF_ROLE_DO: tuple[str, str, str] = ("doc", "Documentation Optimizer", "DOC_OPTIMIZER.md")
 
 
+# v1.15.0 (Phase C) — role-specific scribe round prompts. Each runs on a fresh
+# `claude --print` session triggered by new commits in the AITF repo. The prompt
+# tells the role exactly what to look for and what to do; if there's nothing for
+# its role this round, the role is instructed to commit nothing and stop.
+AITF_SCRIBE_DEFAULTS: dict[str, dict] = {
+    "pd": {
+        "interval_minutes": 30,
+        "round_prompt": (
+            "You are the Project Director. New commits arrived. Your job this round:\n"
+            "1. Skim the new commits. Did DD verdict any REPORTS as accepted? If a phase's\n"
+            "   acceptance criteria are met (PROJECT_STATUS.md vs latest REPORTS), update\n"
+            "   PROJECT_STATUS.md and `git commit` the change.\n"
+            "2. If the current phase is complete and a new directive is needed, write\n"
+            "   docs/TEAM/DIRECTIVES/NNN-<slug>.md following DIRECTIVE_TEMPLATE.md.\n"
+            "3. If nothing strategic is needed this round, do NOTHING — no commit, no\n"
+            "   message. Silence is the right answer when there's no new verdict to react to."
+        ),
+    },
+    "dd": {
+        "interval_minutes": 15,
+        "round_prompt": (
+            "You are the Development Director. New commits arrived. Your job this round:\n"
+            "1. Are there NEW DIRECTIVES from PD (open status, no TODO entries yet)? If yes,\n"
+            "   break each into discrete TODO items in docs/TEAM/TODO.md, record any\n"
+            "   architectural decisions in DECISIONS.md, and `git commit`.\n"
+            "2. Are there NEW REPORTS from Team that have not been verdicted? If yes, review\n"
+            "   each against its acceptance criteria. Append a `## DD verdict` section\n"
+            "   (accepted / changes_requested / rejected) and `git commit`. For\n"
+            "   changes_requested, also `clade_message(to='team', ...)` with the specifics.\n"
+            "3. If neither (1) nor (2) applies, do nothing this round."
+        ),
+    },
+    "team": {
+        "interval_minutes": 30,
+        "round_prompt": (
+            "You are the Development Team. New commits arrived. Your job this round:\n"
+            "1. Read docs/TEAM/TODO.md. Find the FIRST unchecked task in the current phase.\n"
+            "2. If there's no unchecked task in the current phase, do nothing this round.\n"
+            "3. If there is one, read DECISIONS.md and ARCHITECTURE_VISION.md, then implement\n"
+            "   the task. Run `pytest`. Write a report at docs/TEAM/REPORTS/<phase>-<slug>.md\n"
+            "   following REPORT_TEMPLATE.md. `git commit` the code AND the report on a feature branch.\n"
+            "4. Do not check the TODO box yourself — DD does that after verdicting."
+        ),
+    },
+    "doc": {
+        "interval_minutes": 60,
+        # doc keeps the default Phase B scribe prompt — leaving round_prompt=None
+        # makes _scribe_tick use the original documentation-curator instructions.
+        "round_prompt": None,
+    },
+}
+
+
 @dataclass
 class AitfPeerSpec:
     peer_id: str
@@ -107,17 +160,21 @@ def parse_aitf_project(project_path: Path) -> AitfImport:
         if not role_text:
             raise ValueError(f"AITF role file is empty: {role_path}")
         display = f"{default_name} — {project_name}" if project_name else default_name
-        # v1.14.0 (Phase B): the DO peer turns AITF's on-demand Documentation
-        # Optimizer into a self-driving scribe. Defaults: hourly tick, hard cap
-        # of 24 rounds/day, watches the AITF project repo.
-        scribe_cfg = None
-        if peer_id == "doc":
+        # v1.14.0 (Phase B) → v1.15.0 (Phase C): every AITF role now becomes a
+        # self-driving peer. PD/DD/Team get role-specific round_prompt (defined
+        # in AITF_SCRIBE_DEFAULTS above); doc keeps the default scribe prompt.
+        # All four watch the AITF project repo; cheap-exit when HEAD unchanged.
+        defaults = AITF_SCRIBE_DEFAULTS.get(peer_id)
+        scribe_cfg: dict | None = None
+        if defaults is not None:
             scribe_cfg = {
                 "enabled": True,
-                "interval_minutes": 60,
+                "interval_minutes": defaults["interval_minutes"],
                 "max_rounds_per_day": 24,
                 "docs_repo_path": abs_project,
             }
+            if defaults.get("round_prompt"):
+                scribe_cfg["round_prompt"] = defaults["round_prompt"]
         peers.append(AitfPeerSpec(
             peer_id=peer_id,
             display_name=display,

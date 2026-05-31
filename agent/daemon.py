@@ -1020,22 +1020,33 @@ async def _scribe_tick(cfg, workdir: Path, dangerous: bool, state: dict[str, Any
     log(f"{CYAN}↻ scribe round: {repo.name} {last_sha[:7] if last_sha else '(first)'} → {head[:7]}{RESET}", "")
 
     peer_list = ", ".join(sorted(cfg.peers.keys())) or "(no peers configured)"
-    prompt = (
-        f"Time to do a scribe round on {repo}.\n\n"
+    context = (
+        f"Repo: {repo}\n"
         f"=== NEW COMMITS SINCE LAST ROUND ({last_sha[:12] if last_sha else 'first round'} -> {head[:12]}) ===\n"
         f"{commits}\n"
         f"=== END ===\n\n"
-        f"Peers you can reach via clade_message: {peer_list}\n\n"
-        f"Your job this round:\n"
-        f"1. Skim the changed files (focus on docs/TEAM/ if the substrate is an AITF project).\n"
-        f"2. If a project-level summary (e.g. PROJECT_STATUS.md, OPTIMIZATION_LOG.md) is\n"
-        f"   stale relative to the new commits, update it and `git commit` the change.\n"
-        f"3. For any peer whose owned area looks neglected, send ONE short nudge via\n"
-        f"   clade_message(to=<peer>, content='reminder: ...'). One per peer per round.\n"
-        f"4. If enough has changed since the last review, ask the project director\n"
-        f"   peer (typically 'pd' in AITF setups) for review via clade_message.\n\n"
-        f"Be terse. Do not invent activity that isn't in the commits above."
+        f"Peers you can reach via clade_message: {peer_list}\n"
     )
+
+    # v1.15.0 (Phase C): if a role supplied its own round_prompt, use it; otherwise
+    # fall back to the original Phase B documentation-curator instructions.
+    custom = cfg.scribe.round_prompt if (cfg.scribe and cfg.scribe.round_prompt) else None
+    if custom:
+        prompt = f"{context}\n{custom.strip()}"
+    else:
+        prompt = (
+            f"Time to do a scribe round.\n\n"
+            f"{context}\n"
+            f"Your job this round:\n"
+            f"1. Skim the changed files (focus on docs/TEAM/ if the substrate is an AITF project).\n"
+            f"2. If a project-level summary (e.g. PROJECT_STATUS.md, OPTIMIZATION_LOG.md) is\n"
+            f"   stale relative to the new commits, update it and `git commit` the change.\n"
+            f"3. For any peer whose owned area looks neglected, send ONE short nudge via\n"
+            f"   clade_message(to=<peer>, content='reminder: ...'). One per peer per round.\n"
+            f"4. If enough has changed since the last review, ask the project director\n"
+            f"   peer (typically 'pd' in AITF setups) for review via clade_message.\n\n"
+            f"Be terse. Do not invent activity that isn't in the commits above."
+        )
 
     answer = await _call_claude_scribe(prompt, workdir, cfg, dangerous)
     log(f"{DIM}scribe round done: {answer[:160]}{RESET}", "")

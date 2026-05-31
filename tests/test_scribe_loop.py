@@ -266,3 +266,54 @@ async def test_loop_exits_immediately_when_no_scribe_config(tmp_path: Path):
     from agent.main import cfg
     assert cfg.scribe is None
     await asyncio.wait_for(daemon.scribe_loop(cfg, tmp_path / "wd", False), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_tick_uses_round_prompt_when_set(tmp_path: Path, monkeypatch):
+    """v1.15.0 (Phase C): if scribe.round_prompt is set, _scribe_tick uses it
+    instead of the default scribe documentation prompt. PD/DD/Team rely on this."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    cfg_dict = _scribe_cfg("pd", str(tmp_path / "audit.db"), docs_repo_path=str(repo),
+                            scribe_extra={"round_prompt": "MARKER_PD_PROMPT do your specific job"})
+    daemon = _load_daemon_with_config(tmp_path, cfg_dict)
+    from agent.main import cfg
+
+    seen = {}
+    async def _fake_claude(prompt, workdir, cfg_, dangerous):
+        seen["prompt"] = prompt
+        return "ok"
+    monkeypatch.setattr(daemon, "_call_claude_scribe", _fake_claude)
+
+    state = {"last_head_sha": None, "rounds_today": []}
+    spawned = await daemon._scribe_tick(cfg, tmp_path / "wd", False, state)
+    assert spawned is True
+    assert "MARKER_PD_PROMPT" in seen["prompt"], "round_prompt override not used"
+    # Default Phase B scribe-specific phrasing must NOT appear when override is set
+    assert "scribe round" not in seen["prompt"].lower() or "MARKER_PD_PROMPT" in seen["prompt"]
+    # Context (repo + commits) is still injected ahead of the override
+    assert "NEW COMMITS SINCE LAST ROUND" in seen["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_tick_falls_back_to_default_prompt_when_no_round_prompt(tmp_path: Path, monkeypatch):
+    """When round_prompt is None (doc peer's default), use the original Phase B prompt."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    daemon = _load_daemon_with_config(tmp_path, _scribe_cfg(
+        "doc", str(tmp_path / "audit.db"), docs_repo_path=str(repo)))
+    from agent.main import cfg
+    assert cfg.scribe.round_prompt is None
+
+    seen = {}
+    async def _fake_claude(prompt, workdir, cfg_, dangerous):
+        seen["prompt"] = prompt
+        return "ok"
+    monkeypatch.setattr(daemon, "_call_claude_scribe", _fake_claude)
+
+    state = {"last_head_sha": None, "rounds_today": []}
+    await daemon._scribe_tick(cfg, tmp_path / "wd", False, state)
+    # Default prompt references documentation-curator behavior
+    assert "PROJECT_STATUS.md" in seen["prompt"]
+    assert "OPTIMIZATION_LOG.md" in seen["prompt"]
+    assert "nudge" in seen["prompt"]

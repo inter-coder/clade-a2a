@@ -118,15 +118,29 @@ def test_parse_with_do(tmp_path: Path):
     # teams: aitf_team has all, engineering has dd+team
     assert set(out.teams["aitf_team"]) == {"pd", "dd", "team", "doc"}
     assert set(out.teams["engineering"]) == {"dd", "team"}
-    # v1.14.0 (Phase B): doc peer gets scribe config; others don't
-    doc = next(p for p in out.peers if p.peer_id == "doc")
-    assert doc.scribe is not None
-    assert doc.scribe["enabled"] is True
-    assert doc.scribe["interval_minutes"] == 60
-    assert doc.scribe["max_rounds_per_day"] == 24
-    assert doc.scribe["docs_repo_path"] == str(project.resolve())
-    for non_doc in (p for p in out.peers if p.peer_id != "doc"):
-        assert non_doc.scribe is None
+    # v1.14.0 (Phase B): doc peer gets scribe config.
+    # v1.15.0 (Phase C): PD/DD/Team also get scribe with role-specific prompts.
+    abs_project = str(project.resolve())
+    expected_intervals = {"pd": 30, "dd": 15, "team": 30, "doc": 60}
+    for p in out.peers:
+        assert p.scribe is not None, f"{p.peer_id} missing scribe config"
+        assert p.scribe["enabled"] is True
+        assert p.scribe["interval_minutes"] == expected_intervals[p.peer_id]
+        assert p.scribe["max_rounds_per_day"] == 24
+        assert p.scribe["docs_repo_path"] == abs_project
+    # round_prompt: PD/DD/Team have role-specific prompts; doc uses default (no override)
+    pd_scribe = next(p.scribe for p in out.peers if p.peer_id == "pd")
+    dd_scribe = next(p.scribe for p in out.peers if p.peer_id == "dd")
+    team_scribe = next(p.scribe for p in out.peers if p.peer_id == "team")
+    doc_scribe = next(p.scribe for p in out.peers if p.peer_id == "doc")
+    assert "Project Director" in pd_scribe["round_prompt"]
+    assert "PROJECT_STATUS" in pd_scribe["round_prompt"]
+    assert "Development Director" in dd_scribe["round_prompt"]
+    assert "TODO.md" in dd_scribe["round_prompt"]
+    assert "DD verdict" in dd_scribe["round_prompt"]
+    assert "Development Team" in team_scribe["round_prompt"]
+    assert "REPORTS/" in team_scribe["round_prompt"]
+    assert "round_prompt" not in doc_scribe  # doc falls back to default scribe prompt
 
 
 def test_parse_without_do(tmp_path: Path):
@@ -197,12 +211,23 @@ def test_endpoint_imports_aitf_project(tmp_path: Path):
     # teams stored in yaml
     assert set(pd_yaml["teams"]["aitf_team"]) == {"pd", "dd", "team", "doc"}
     assert set(pd_yaml["teams"]["engineering"]) == {"dd", "team"}
-    # v1.14.0 (Phase B): scribe block only on doc peer yaml
-    assert "scribe" not in pd_yaml
-    doc_yaml = yaml.safe_load((state.data_dir / project_token / "doc.yaml").read_text())
-    assert doc_yaml["scribe"]["enabled"] is True
-    assert doc_yaml["scribe"]["interval_minutes"] == 60
-    assert doc_yaml["scribe"]["docs_repo_path"] == abs_project
+    # v1.14.0 (Phase B) + v1.15.0 (Phase C): every peer yaml has a scribe block
+    # with the right interval and docs_repo_path. PD/DD/Team carry role-specific
+    # round_prompt; doc inherits the default scribe prompt.
+    expected_intervals = {"pd": 30, "dd": 15, "team": 30, "doc": 60}
+    for pid, want_interval in expected_intervals.items():
+        y = yaml.safe_load((state.data_dir / project_token / f"{pid}.yaml").read_text())
+        assert y["scribe"]["enabled"] is True, f"{pid} scribe disabled"
+        assert y["scribe"]["interval_minutes"] == want_interval
+        assert y["scribe"]["docs_repo_path"] == abs_project
+    pd_y = yaml.safe_load((state.data_dir / project_token / "pd.yaml").read_text())
+    dd_y = yaml.safe_load((state.data_dir / project_token / "dd.yaml").read_text())
+    team_y = yaml.safe_load((state.data_dir / project_token / "team.yaml").read_text())
+    doc_y = yaml.safe_load((state.data_dir / project_token / "doc.yaml").read_text())
+    assert "Project Director" in pd_y["scribe"]["round_prompt"]
+    assert "Development Director" in dd_y["scribe"]["round_prompt"]
+    assert "Development Team" in team_y["scribe"]["round_prompt"]
+    assert "round_prompt" not in doc_y["scribe"]
 
 
 def test_endpoint_returns_400_on_invalid_path(tmp_path: Path):

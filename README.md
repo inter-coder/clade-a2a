@@ -113,9 +113,18 @@ What you get:
 
 Each peer's role prompt is the **verbatim content** of the matching AITF template (`docs/TEAM/PROJECT_DIRECTOR.md`, etc.). Each peer's `extra_add_dirs` includes the absolute project path, so the daemon-spawned Claude can read AND write the AITF document substrate (`DIRECTIVES/`, `REPORTS/`, `TODO.md`, `DECISIONS.md`, `ARCHIVE/`).
 
-**Phase B (v1.14.0) — self-driving scribe:** the `doc` peer is auto-configured with a `scribe:` block (`enabled: true`, `interval_minutes: 60`, `max_rounds_per_day: 24`, watches the imported project root). Its daemon runs a fifth side-loop that wakes every hour, compares `git rev-parse HEAD` of the repo against persisted state, and **only spawns Claude when there are new commits**. Idle days cost zero tokens. On a round, Claude reads `git log <last>..HEAD`, updates summary documents, nudges quiet peers via `clade_message`, and asks the project director for review when warranted. This replaces AITF's on-demand `./start_role.sh doc` workflow with a self-driving loop. Other peers can opt into the same loop by hand-editing their yaml's `scribe:` block — see `ScribeConfig` in `agent/main.py`.
+**Phase B (v1.14.0) — self-driving scribe:** the `doc` peer is auto-configured with a `scribe:` block (`enabled: true`, `interval_minutes: 60`, `max_rounds_per_day: 24`, watches the imported project root). Its daemon runs a fifth side-loop that wakes every hour, compares `git rev-parse HEAD` of the repo against persisted state, and **only spawns Claude when there are new commits**. Idle days cost zero tokens.
 
-Phase C (replace `orchestrator.sh` with self-driving daemons for PD / DD / Team) is tracked separately.
+**Phase C (v1.15.0) — orchestrator replacement:** PD / DD / Team also get `scribe:` blocks with role-specific `round_prompt` overrides. Each role wakes on new commits and decides whether it has work:
+
+| Role | Interval | Wakes to... |
+|---|---|---|
+| `pd` | 30min | React to verdicted REPORTS; update `PROJECT_STATUS.md`; issue next directive if phase complete |
+| `dd` | 15min | Break new `DIRECTIVES/*` into `TODO.md` items; verdict any new `REPORTS/*` |
+| `team` | 30min | Pick first unchecked `TODO.md` task in current phase; implement; write a report |
+| `doc` | 60min | Default Phase B documentation-curator round (update summaries, nudge quiet peers) |
+
+If nothing in the new commits is relevant to a role's responsibilities, that role's prompt instructs it to do nothing this round (silence is the right answer). Effectively replaces AITF's human-as-dispatcher (`./start_role.sh <role>`) and `scripts/orchestrator.sh` with self-driving daemons. The human still owns scope — set strategic direction by writing to PD's `clade_inbox` or by hand-editing `docs/TEAM/DIRECTIVES/`.
 
 ### Managing the company later
 
@@ -439,7 +448,7 @@ Read by the web UI; also callable directly for scripting.
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.14.x). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.15.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 
