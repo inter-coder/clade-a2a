@@ -879,6 +879,31 @@ def _scribe_state_path(cfg) -> Path:
     return Path(cfg.audit_db).expanduser().parent / f"{cfg.my_id}-scribe-state.json"
 
 
+# v1.16.0 (Phase D) — kill-switch via sentinel files.
+# Global pause: $CLADE_HOME/pause (default ~/.clade/pause) → all peers paused.
+# Per-peer pause: $CLADE_HOME/<peer>-pause → only that peer paused.
+# Override location with CLADE_PAUSE_DIR env var (used by tests).
+
+def _scribe_pause_dir() -> Path:
+    """Directory where sentinel files live. CLADE_PAUSE_DIR overrides default ~/.clade/."""
+    override = os.environ.get("CLADE_PAUSE_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".clade"
+
+
+def _scribe_paused(cfg) -> tuple[bool, str]:
+    """Return (paused, reason). Checks per-peer file first, then global."""
+    d = _scribe_pause_dir()
+    per_peer = d / f"{cfg.my_id}-pause"
+    if per_peer.exists():
+        return True, f"per-peer sentinel {per_peer}"
+    global_ = d / "pause"
+    if global_.exists():
+        return True, f"global sentinel {global_}"
+    return False, ""
+
+
 def _scribe_load_state(cfg) -> dict[str, Any]:
     import json as _json  # noqa: PLC0415
     p = _scribe_state_path(cfg)
@@ -996,6 +1021,19 @@ async def _call_claude_scribe(prompt: str, workdir: Path, cfg, dangerous: bool) 
 
 async def _scribe_tick(cfg, workdir: Path, dangerous: bool, state: dict[str, Any]) -> bool:
     """One round. Returns True if claude was spawned, False if cheap exit."""
+    # v1.16.0 (Phase D): kill-switch check first — before any work or git calls.
+    # Logged once per pause/resume transition (not every tick) via state[_paused_logged].
+    paused, reason = _scribe_paused(cfg)
+    was_logged_paused = state.get("_paused_logged", False)
+    if paused:
+        if not was_logged_paused:
+            log(f"{YELLOW}scribe: paused ({reason}); skipping ticks until sentinel removed{RESET}", "")
+            state["_paused_logged"] = True
+        return False
+    elif was_logged_paused:
+        log(f"{GREEN}scribe: resumed (sentinel removed); rounds active{RESET}", "")
+        state["_paused_logged"] = False
+
     repo = _scribe_resolve_repo(cfg)
     if repo is None:
         log(f"{YELLOW}scribe: no valid docs_repo_path / extra_add_dirs[0]; skipping{RESET}", "")

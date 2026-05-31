@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clade-a2a"
-version = "0.21.0"
+version = "0.22.0"
 description = "Agent-to-Agent (A2A) communication system for Claude Code instances — Bearer/HMAC-secured MCP relay with stdio peer agents"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -43,6 +43,8 @@ clade-agent = "agent.main:main"
 clade-init = "clade_cli.init:main"
 clade-setup-server = "clade_cli.setup_server:main"
 clade-add-peer = "clade_cli.add_peer:main"
+clade-pause = "clade_cli.pause:pause_main"
+clade-resume = "clade_cli.pause:resume_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["relay", "agent", "clade_cli"]

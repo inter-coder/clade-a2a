@@ -12,6 +12,9 @@ company orchestration layer on top of it. Pip package `clade-a2a`, entry points:
 - `clade-init` — legacy bootstrap (still works; superseded by setup-server)
 - `clade-setup-server` — web setup wizard + REST management of peers/teams
 - `clade-add-peer` — surgical peer addition CLI (calls into `clade_cli.peer_ops`)
+- `clade-pause` / `clade-resume` — scribe kill-switch (v1.16.0); creates/removes
+  sentinel files in `$CLADE_PAUSE_DIR` (default `~/.clade/`). `pause` is global;
+  `pause --peer ID` is per-peer.
 
 Read `README.md` for feature overview and the two recommended setup paths
 (web form + `--quickstart`).
@@ -92,7 +95,10 @@ Four components:
    every `interval_minutes`, cheap early-exit when git HEAD of watched repo
    hasn't moved — zero token spend on idle days. `cfg.scribe.round_prompt`
    overrides the default scribe prompt with role-specific instructions —
-   PD/DD/Team get this from AITF import; doc keeps default).
+   PD/DD/Team get this from AITF import; doc keeps default. v1.16.0 kill-switch:
+   `_scribe_paused()` checks `$CLADE_PAUSE_DIR/pause` (global) or
+   `$CLADE_PAUSE_DIR/<peer>-pause` first; paused ticks cheap-exit before any
+   git/spawn work).
 
 4. **`clade_cli/setup_server.py`** — FastAPI web setup wizard + REST
    management. Generates tokens.json + per-peer yamls + `.mcp.json`,

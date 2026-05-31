@@ -128,6 +128,8 @@ If nothing in the new commits is relevant to a role's responsibilities, that rol
 
 **Live demo of the cycle:** `examples/aitf-demo/run-live-cycle.sh` runs a single full PD → DD → Team → DD → PD → DOC cycle with real `claude --print` spawns on a synthetic AITF project (~$3-5 in tokens, ~10 min wall time). Validated 2026-05-31 — from one human seed commit, the 4 roles autonomously delivered a working Typer CLI scaffold + REPORT + accepted verdict + status update. See `examples/aitf-demo/README.md`.
 
+**Kill-switch (v1.16.0):** any scribe loop can be paused immediately via sentinel file. `clade-pause` (no args) creates `~/.clade/pause` → all peers on this host skip their next scribe tick. `clade-pause --peer team` creates `~/.clade/team-pause` → only Team paused. `clade-resume` (with optional `--peer`) removes it. Cheap-exits before any git or `claude --print` work, so a paused tick takes microseconds. Override the sentinel directory with `CLADE_PAUSE_DIR`. Note: this does NOT terminate an already-running `claude --print` spawn — for an immediate kill, SIGTERM the daemon process.
+
 ### Managing the company later
 
 Open the result page (`http://<host>:8000/setup/<project_token>`) — it's a
@@ -450,7 +452,7 @@ Read by the web UI; also callable directly for scripting.
 
 ### Protocol
 
-Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.15.x). Read it before changing the envelope schema or HMAC.
+Single source of truth: [`a2a-protocol.md`](a2a-protocol.md) (v1.16.x). Read it before changing the envelope schema or HMAC.
 
 ### Repo structure
 
