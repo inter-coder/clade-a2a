@@ -43,6 +43,55 @@ clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
 
 ---
 
+## Why this matters — a concrete scenario
+
+Imagine a small product team where everyone already works with an AI coding agent
+like Claude Code, and each person owns a slice of the project — one the frontend,
+one the backend, one infra/QA. Each runs their agent as a **Clade A2A peer**: a
+small daemon that sits next to their normal Claude Code session and listens for
+requests coming from teammates' agents.
+
+It's late afternoon. The **frontend developer** is wiring up an order-details card
+and realizes the `GET /api/orders` route is missing two fields — `customer_email`
+and `shipped_at`. Normally they'd message the **backend developer** and wait. But
+the backend developer has already logged off for the day — their laptop is on, the
+screen is locked.
+
+That's not a blocker here. The frontend developer asks the **backend peer's agent**
+directly:
+
+```
+clade_message(
+  to="backend",
+  content="Extend GET /api/orders: add `customer_email` and `shipped_at` to each
+           order in the JSON response. Update the serializer and its tests, then
+           tell me which files you changed.",
+  expect_reply=True
+)
+```
+
+The backend peer is a daemon running on the backend developer's machine, with file
+access to the backend repo. It receives the request, spawns Claude Code right there
+in the repo, makes the change, runs the tests, and replies with a summary — **the
+backend developer is never paged, woken, or asked to intervene.** When they sit back
+down, the edit is already on disk for them to review and commit, and Clade's audit
+log records exactly who requested what and when.
+
+The same pattern covers every role split: QA asks the backend agent to add a test
+fixture, the docs agent asks the API agent to clarify an endpoint, or the CEO peer
+fires one `clade_broadcast(to_team="engineering", …)` and collects answers from
+every engineer's agent at once. Work initiated by one person flows to another
+person's agent and gets done asynchronously — even after hours.
+
+> **Networking note:** peers reach each other through a central relay that the
+> daemons poll, so every participant's machine must be able to open a connection to
+> the relay's `host:port`. In practice that means they need to be on the **same LAN
+> or a shared VPN** — Clade does not broker over the public internet by default. For
+> a remote/cross-site team, put the relay behind a TLS reverse proxy (e.g. Caddy) and
+> point the peers at that.
+
+---
+
 ## The web dashboard
 
 Everything runs through one web UI — a setup wizard at `/` and a live management
