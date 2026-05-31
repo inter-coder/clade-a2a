@@ -4,236 +4,368 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Clade A2A — Setup</title>
+  <script>
+    // Pre-paint: apply the saved theme before first paint so there is no flash.
+    (function () {
+      try {
+        document.documentElement.setAttribute(
+          'data-theme', localStorage.getItem('clade-theme') || 'system');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'system');
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    /* ──────────────────────────────────────────────────────────────
+       Clade A2A console — warm "operator deck" theme (shared with the
+       result dashboard). data-theme on <html>: system / light / dark.
+       ────────────────────────────────────────────────────────────── */
     :root {
-      --bg: #fafafa;
-      --surface: #ffffff;
-      --border: #e0e0e0;
-      --text: #1a1a1a;
-      --text-dim: #666;
-      --accent: #2563eb;
-      --accent-hover: #1d4ed8;
-      --danger: #dc2626;
-      --success: #059669;
-      --code-bg: #f5f5f5;
+      color-scheme: light;
+      --bg:            #F5F1EA;
+      --surface:       #FFFDFB;
+      --surface-2:     #F1EBE2;
+      --border:        #E7DFD3;
+      --border-strong: #D6CBB9;
+      --text:          #211B14;
+      --text-dim:      #8A8073;
+      --accent:        #C0613B;
+      --accent-hover:  #A5492A;
+      --accent-soft:   rgba(192,97,59,0.12);
+      --accent-ring:   rgba(192,97,59,0.40);
+      --on-accent:     #FFF7F2;
+      --success:       #3F7D53;
+      --success-soft:  rgba(63,125,83,0.15);
+      --success-ring:  rgba(63,125,83,0.35);
+      --warning:       #B0712A;
+      --danger:        #B4453A;
+      --danger-soft:   rgba(180,69,58,0.13);
+      --code-bg:       #F1EBE2;
+      --shadow-sm: 0 1px 2px rgba(60,42,28,0.07), 0 1px 1px rgba(60,42,28,0.04);
+      --shadow-md: 0 8px 26px rgba(60,42,28,0.09), 0 2px 6px rgba(60,42,28,0.05);
+      --shadow-lg: 0 24px 60px rgba(60,42,28,0.16);
+      --radius:    18px;
+      --radius-sm: 12px;
+      --radius-xs: 8px;
+      --font-display: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+      --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg:            #141009;
+      --surface:       #1D1810;
+      --surface-2:     #262017;
+      --border:        #332B20;
+      --border-strong: #463B2C;
+      --text:          #F1E9DC;
+      --text-dim:      #A99C88;
+      --accent:        #E2865C;
+      --accent-hover:  #F3A079;
+      --accent-soft:   rgba(226,134,92,0.16);
+      --accent-ring:   rgba(226,134,92,0.45);
+      --on-accent:     #1B1209;
+      --success:       #5FB97E;
+      --success-soft:  rgba(95,185,126,0.16);
+      --success-ring:  rgba(95,185,126,0.40);
+      --warning:       #E0A24B;
+      --danger:        #E5736A;
+      --danger-soft:   rgba(229,115,106,0.16);
+      --code-bg:       #262017;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.45);
+      --shadow-md: 0 8px 26px rgba(0,0,0,0.5);
+      --shadow-lg: 0 24px 60px rgba(0,0,0,0.62);
     }
     @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f0f0f;
-        --surface: #1a1a1a;
-        --border: #2a2a2a;
-        --text: #f0f0f0;
-        --text-dim: #999;
-        --accent: #3b82f6;
-        --accent-hover: #60a5fa;
-        --code-bg: #1e1e1e;
+      :root[data-theme="system"] {
+        color-scheme: dark;
+        --bg:            #141009;
+        --surface:       #1D1810;
+        --surface-2:     #262017;
+        --border:        #332B20;
+        --border-strong: #463B2C;
+        --text:          #F1E9DC;
+        --text-dim:      #A99C88;
+        --accent:        #E2865C;
+        --accent-hover:  #F3A079;
+        --accent-soft:   rgba(226,134,92,0.16);
+        --accent-ring:   rgba(226,134,92,0.45);
+        --on-accent:     #1B1209;
+        --success:       #5FB97E;
+        --success-soft:  rgba(95,185,126,0.16);
+        --success-ring:  rgba(95,185,126,0.40);
+        --warning:       #E0A24B;
+        --danger:        #E5736A;
+        --danger-soft:   rgba(229,115,106,0.16);
+        --code-bg:       #262017;
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.45);
+        --shadow-md: 0 8px 26px rgba(0,0,0,0.5);
+        --shadow-lg: 0 24px 60px rgba(0,0,0,0.62);
       }
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      padding: 2rem 1rem;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
+      padding: 2.5rem 1.25rem 4rem;
+      font-family: var(--font-sans);
+      background:
+        radial-gradient(1200px 480px at 8% -10%, var(--accent-soft), transparent 60%),
+        radial-gradient(1000px 520px at 112% -4%, var(--accent-soft), transparent 55%),
+        var(--bg);
+      background-attachment: fixed;
       color: var(--text);
-      line-height: 1.5;
+      line-height: 1.55;
+      letter-spacing: -0.006em;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
-    .container {
-      max-width: 880px;
-      margin: 0 auto;
+    ::selection { background: var(--accent-soft); }
+    a { color: var(--accent); }
+    .container { max-width: 920px; margin: 0 auto; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    /* ── Masthead ─────────────────────────────────────────────── */
+    .masthead {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 1.15rem;
+      padding: 1.6rem 1.75rem;
+      margin-bottom: 1.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-md);
+      overflow: hidden;
+      animation: rise 0.5s ease both;
     }
-    header {
-      margin-bottom: 2rem;
+    .masthead::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(420px 200px at 88% -40%, var(--accent-soft), transparent 70%);
+      pointer-events: none;
     }
+    .mast-left { display: flex; align-items: center; gap: 1.15rem; flex: 1; min-width: 0; z-index: 1; }
+    .masthead svg { flex-shrink: 0; filter: drop-shadow(0 4px 10px rgba(192,97,59,0.25)); }
     h1 {
-      margin: 0 0 0.5rem;
-      font-size: 1.75rem;
-      font-weight: 600;
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2rem);
+      line-height: 1.05;
+      letter-spacing: -0.025em;
     }
-    .subtitle {
+    .subtitle { color: var(--text-dim); font-size: 0.95rem; margin: 0.4rem 0 0; }
+
+    /* ── Theme toggle (segmented) ─────────────────────────────── */
+    .theme-toggle {
+      position: relative; z-index: 1;
+      display: inline-flex; gap: 0.15rem;
+      padding: 0.25rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+    .theme-toggle button {
+      width: 2rem; height: 2rem;
+      display: grid; place-items: center;
+      border: none; background: transparent;
       color: var(--text-dim);
+      border-radius: 999px;
+      cursor: pointer;
       font-size: 0.95rem;
+      transition: background 0.18s, color 0.18s, transform 0.18s;
     }
+    .theme-toggle button:hover { color: var(--text); transform: translateY(-1px); }
+    .theme-toggle button.active {
+      background: var(--surface);
+      color: var(--accent);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ── Cards ────────────────────────────────────────────────── */
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
+      border-radius: var(--radius);
+      padding: 1.6rem 1.75rem;
+      margin-bottom: 1.4rem;
+      box-shadow: var(--shadow-sm);
+      transition: box-shadow 0.22s, border-color 0.22s;
+      animation: rise 0.45s ease both;
+    }
+    .card:hover { box-shadow: var(--shadow-md); }
+    .card--accent {
+      background: linear-gradient(180deg, var(--accent-soft), transparent 60%), var(--surface);
+      border-color: var(--accent-ring);
+    }
+    .card--success {
+      background: linear-gradient(180deg, var(--success-soft), transparent 60%), var(--surface);
+      border-color: var(--success-ring);
     }
     .card h2 {
-      margin: 0 0 1rem;
-      font-size: 1.1rem;
+      margin: 0 0 1.1rem;
+      font-family: var(--font-display);
+      font-size: 1.18rem;
       font-weight: 600;
+      letter-spacing: -0.015em;
     }
-    .grid {
-      display: grid;
-      gap: 1rem;
-    }
-    .grid-2 {
-      grid-template-columns: 1fr 1fr;
-    }
-    @media (max-width: 640px) {
-      .grid-2 { grid-template-columns: 1fr; }
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 0.4rem;
-    }
-    label {
-      font-size: 0.85rem;
-      font-weight: 500;
-      color: var(--text-dim);
-    }
-    label .hint {
-      font-weight: 400;
-      font-size: 0.78rem;
-      color: var(--text-dim);
-    }
+
+    /* ── Forms ────────────────────────────────────────────────── */
+    .grid { display: grid; gap: 1rem; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    .field { display: flex; flex-direction: column; gap: 0.4rem; }
+    label { font-size: 0.86rem; font-weight: 600; color: var(--text); }
+    label .hint { font-weight: 400; font-size: 0.78rem; color: var(--text-dim); }
     input[type="text"], input[type="number"], textarea {
       padding: 0.6rem 0.75rem;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: var(--radius-xs);
       background: var(--bg);
       color: var(--text);
-      font-family: inherit;
-      font-size: 0.95rem;
-      transition: border-color 0.15s;
+      font-family: var(--font-sans);
+      font-size: 0.94rem;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
     input:focus, textarea:focus {
       outline: none;
       border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-ring);
     }
     textarea {
       resize: vertical;
       min-height: 90px;
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 0.88rem;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      line-height: 1.5;
     }
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.92rem;
-    }
+    .checkbox-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.92rem; }
     .checkbox-row input[type="checkbox"] {
-      width: 1.1rem;
-      height: 1.1rem;
-      accent-color: var(--accent);
+      width: 1.1rem; height: 1.1rem; accent-color: var(--accent); cursor: pointer;
     }
+
+    /* ── Peer / team rows ─────────────────────────────────────── */
     .peer-row {
-      background: var(--surface);
+      background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.25rem;
+      border-radius: var(--radius-sm);
+      padding: 1.3rem 1.4rem;
       margin-bottom: 1rem;
       position: relative;
+      transition: border-color 0.2s;
     }
+    .peer-row:hover { border-color: var(--border-strong); }
     .peer-row .header-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1rem;
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;
     }
     .peer-row .header-row strong {
+      font-family: var(--font-display);
       font-size: 0.95rem;
-      color: var(--text-dim);
-    }
-    .btn {
-      padding: 0.6rem 1.2rem;
-      border: none;
-      border-radius: 6px;
-      font-family: inherit;
-      font-size: 0.92rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .btn-primary {
-      background: var(--accent);
-      color: white;
-    }
-    .btn-primary:hover {
-      background: var(--accent-hover);
-    }
-    .btn-secondary {
-      background: transparent;
       color: var(--text);
+      letter-spacing: -0.01em;
+    }
+
+    /* ── Buttons ──────────────────────────────────────────────── */
+    .btn {
+      padding: 0.62rem 1.3rem;
       border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.18s, border-color 0.18s, transform 0.12s, filter 0.18s, color 0.18s;
     }
-    .btn-secondary:hover {
-      background: var(--code-bg);
+    .btn:active { transform: translateY(1px); }
+    .btn-primary {
+      background: linear-gradient(180deg, var(--accent), var(--accent-hover));
+      color: var(--on-accent);
+      border-color: transparent;
+      box-shadow: var(--shadow-sm);
     }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .btn-success {
+      background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 78%, #000));
+      color: #fff;
+      border-color: transparent;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn-success:hover { filter: brightness(1.06); }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--surface-2); border-color: var(--border-strong); }
     .btn-danger {
-      background: transparent;
-      color: var(--danger);
-      border: 1px solid var(--border);
-      padding: 0.4rem 0.8rem;
-      font-size: 0.85rem;
+      background: var(--surface); color: var(--danger); border: 1px solid var(--border);
+      padding: 0.42rem 0.9rem; font-size: 0.84rem;
     }
-    .btn-danger:hover {
-      background: var(--danger);
-      color: white;
-      border-color: var(--danger);
-    }
-    .actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 0.75rem;
-      margin-top: 1.5rem;
-    }
-    .actions .btn-primary {
-      padding: 0.75rem 2rem;
-      font-size: 1rem;
-    }
+    .btn-danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; }
+    .actions .btn-primary { padding: 0.78rem 2.1rem; font-size: 1rem; }
+
     .add-peer {
-      margin: 0 0 1rem;
+      margin: 0 0 0.25rem;
       width: 100%;
-      padding: 0.7rem;
-      border: 2px dashed var(--border);
+      padding: 0.85rem;
+      border: 1.5px dashed var(--border-strong);
       background: transparent;
       color: var(--text-dim);
-      border-radius: 8px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
-      transition: border-color 0.15s, color 0.15s;
+      transition: border-color 0.18s, color 0.18s, background 0.18s;
+      font-family: var(--font-sans);
       font-size: 0.92rem;
+      font-weight: 600;
     }
-    .add-peer:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
+    .add-peer:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
     code {
       background: var(--code-bg);
-      padding: 0.15rem 0.4rem;
-      border-radius: 3px;
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 0.85em;
+      border: 1px solid var(--border);
+      padding: 0.12rem 0.42rem;
+      border-radius: var(--radius-xs);
+      font-family: var(--font-mono);
+      font-size: 0.84em;
     }
+
     .existing {
       margin-top: 2rem;
-      padding: 1rem;
-      background: var(--code-bg);
-      border-radius: 8px;
+      padding: 1.1rem 1.3rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
       font-size: 0.9rem;
+      box-shadow: var(--shadow-sm);
     }
     .existing ul { margin: 0.5rem 0 0; padding-left: 1.25rem; }
-    .existing a { color: var(--accent); text-decoration: none; }
+    .existing li { margin: 0.25rem 0; }
+    .existing a { color: var(--accent); text-decoration: none; font-weight: 500; }
     .existing a:hover { text-decoration: underline; }
+
     .error {
-      background: rgba(220, 38, 38, 0.1);
+      background: var(--danger-soft);
       color: var(--danger);
-      padding: 0.75rem 1rem;
-      border-radius: 6px;
+      padding: 0.8rem 1rem;
+      border: 1px solid var(--danger);
+      border-radius: var(--radius-xs);
       margin-bottom: 1rem;
       font-size: 0.9rem;
       display: none;
     }
+
+    @media (max-width: 620px) { .masthead { flex-direction: column; align-items: flex-start; } }
   </style>
 </head>
 <body>
   <div class="container">
-    <header style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+    <header class="masthead">
+      <div class="mast-left">
       <svg width="64" height="64" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Clade A2A logo" style="flex-shrink:0">
         <defs>
           <radialGradient id="sparkIdx" cx="50%" cy="50%" r="50%">
@@ -258,40 +390,37 @@
         <circle cx="128" cy="128" r="6" fill="#FFF5EE" opacity="0.7"/>
       </svg>
       <div>
-        <h1 style="margin:0">Clade A2A Setup</h1>
-        <p class="subtitle" style="margin:0.25rem 0 0">Configure peers + teams below. Each peer gets a unique install URL — one <code>curl … | bash</code> and they're online.</p>
+        <h1>Clade A2A Setup</h1>
+        <p class="subtitle">Configure peers + teams below. Each peer gets a unique install URL — one <code>curl … | bash</code> and they're online.</p>
+      </div>
+      </div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme-val="system" onclick="setTheme('system')" title="Match system">◐</button>
+        <button type="button" data-theme-val="light"  onclick="setTheme('light')"  title="Light">☀</button>
+        <button type="button" data-theme-val="dark"   onclick="setTheme('dark')"   title="Dark">☾</button>
       </div>
     </header>
 
     <div id="error" class="error"></div>
 
-    <div class="card" style="background:#fef7f3;border-left:4px solid #DA7756">
-      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Quick start</h2>
-      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">Load a pre-configured mini dev shop (CEO + frontend + backend + qa + engineering team). You can tweak any field before submit.</p>
-      <button type="button"
-              style="background:#DA7756;color:white;border:none;padding:0.6rem 1.2rem;border-radius:6px;font-family:inherit;font-size:0.92rem;cursor:pointer;font-weight:500"
-              onmouseover="this.style.background='#C04B2F'"
-              onmouseout="this.style.background='#DA7756'"
-              onclick="loadVirtualCompanyTemplate()">Load virtual-company template</button>
+    <div class="card card--accent">
+      <h2 style="margin:0 0 0.5rem">Quick start</h2>
+      <p style="margin:0 0 0.9rem;color:var(--text-dim);font-size:0.92rem">Load a pre-configured mini dev shop (CEO + frontend + backend + qa + engineering team). You can tweak any field before submit.</p>
+      <button type="button" class="btn btn-primary" onclick="loadVirtualCompanyTemplate()">Load virtual-company template</button>
     </div>
 
-    <div class="card" style="background:#f0fbf6;border-left:4px solid #059669">
-      <h2 style="margin:0 0 0.5rem;color:#1a1a1a">Import AI Team Framework project</h2>
-      <p style="margin:0 0 0.75rem;color:#4a4a4a;font-size:0.92rem">
+    <div class="card card--success">
+      <h2 style="margin:0 0 0.5rem">Import AI Team Framework project</h2>
+      <p style="margin:0 0 0.9rem;color:var(--text-dim);font-size:0.92rem">
         Already have a project scaffolded by the
-        <a href="https://github.com/dusankrstic-cpu/ai-team-framework" target="_blank" rel="noopener" style="color:#047857">AI Team Framework wizard</a>?
+        <a href="https://github.com/dusankrstic-cpu/ai-team-framework" target="_blank" rel="noopener" style="color:var(--success)">AI Team Framework wizard</a>?
         Point to it and we map PD / DD / Team (+ DO if enabled) to 4 Clade A2A peers, with full file access to <code>docs/TEAM/</code>.
       </p>
       <div style="display:flex;gap:0.5rem;align-items:stretch;flex-wrap:wrap">
-        <input type="text" id="aitf_project_path" placeholder="/absolute/path/to/your-project"
-               style="flex:1;min-width:280px;padding:0.55rem 0.7rem;border:1px solid #cbd5d0;border-radius:6px;font-family:inherit;font-size:0.92rem;background:white;color:#1a1a1a">
-        <button type="button"
-                style="background:#059669;color:white;border:none;padding:0.6rem 1.2rem;border-radius:6px;font-family:inherit;font-size:0.92rem;cursor:pointer;font-weight:500"
-                onmouseover="this.style.background='#047857'"
-                onmouseout="this.style.background='#059669'"
-                onclick="importAitfProject()">Import</button>
+        <input type="text" id="aitf_project_path" placeholder="/absolute/path/to/your-project" style="flex:1;min-width:280px">
+        <button type="button" class="btn btn-success" onclick="importAitfProject()">Import</button>
       </div>
-      <div id="aitf_error" style="margin-top:0.5rem;color:#dc2626;font-size:0.88rem;display:none"></div>
+      <div id="aitf_error" style="margin-top:0.6rem;color:var(--danger);font-size:0.88rem;display:none"></div>
     </div>
 
     <form id="setup-form">
@@ -357,6 +486,23 @@
   </div>
 
   <script>
+    // Theme switcher: system / light / dark, persisted to localStorage. The
+    // pre-paint <head> script already applied the saved value; this keeps the
+    // segmented control highlighted and handles clicks.
+    function setTheme(val) {
+      if (!['system', 'light', 'dark'].includes(val)) val = 'system';
+      document.documentElement.setAttribute('data-theme', val);
+      try { localStorage.setItem('clade-theme', val); } catch {}
+      document.querySelectorAll('.theme-toggle button').forEach(b => {
+        b.classList.toggle('active', b.dataset.themeVal === val);
+      });
+    }
+    (function initTheme() {
+      let saved = 'system';
+      try { saved = localStorage.getItem('clade-theme') || 'system'; } catch {}
+      setTheme(saved);
+    })();
+
     let peerCount = 0;
 
     function addPeer(defaults) {
