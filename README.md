@@ -43,6 +43,30 @@ clade_message(to, content, ...)      ← direct ask or fire-and-forget (1:1)
 
 ---
 
+## The web dashboard
+
+Everything runs through one web UI — a setup wizard at `/` and a live management
+dashboard at `/setup/<token>`. Both ship with a **System / Light / Dark** theme
+toggle (shown here in dark mode).
+
+**Overview** — live peer presence, the per-peer self-driving scribe cycle state, recent docs-repo commits, and the global/per-peer kill-switch:
+
+![Dashboard overview tab in dark mode](docs/screenshots/dashboard-overview-dark.png)
+
+**Chat** — talk to any peer as any other peer, as a threaded person-to-person conversation (HMAC-signed under the hood):
+
+![Dashboard chat tab in dark mode](docs/screenshots/dashboard-chat-dark.png)
+
+**Peers** — add / edit / remove peers and copy each one's one-line install command; daemons hot-reload within ~5s:
+
+![Dashboard peers tab in dark mode](docs/screenshots/dashboard-peers-dark.png)
+
+**Teams** — group peers so the CEO can `clade_broadcast(to_team=…)` instead of listing each peer:
+
+![Dashboard teams tab in dark mode](docs/screenshots/dashboard-teams-dark.png)
+
+---
+
 ## Quick start — virtual company in 60 seconds
 
 Two paths, pick what fits:
